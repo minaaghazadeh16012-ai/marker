@@ -601,6 +601,179 @@ class WordingIsTheBooks(Rule):
                 )
 
 
+class ObjectiveRestsOnItsConceptsEvidence(Rule):
+    code = "PEDA006"
+    stage = "semantic"
+    description = "An objective may only rest on the evidence of its concept."
+
+    def check(self, ctx):
+        """Re-derive the admission rule from the assembled document.
+
+        The extractor already enforces this, and that is exactly why it is
+        checked again here: a rule proved only by the code that implements it
+        is not proved. This works from block ids rather than evidence ids
+        because an objective quoting a different sentence of the same block
+        produces a different evidence id by construction.
+        """
+        if not ctx.schema_doc:
+            return
+        evidence = ctx.schema_doc.evidence_by_id()
+        concepts = {c.id: c for c in ctx.schema_doc.concepts}
+
+        def blocks_of(ids):
+            return {
+                evidence[i].block_id for i in ids if i in evidence
+            }
+
+        for objective in ctx.schema_doc.objectives:
+            allowed = set()
+            for concept_id in objective.concept_ids:
+                concept = concepts.get(concept_id)
+                if concept is not None:
+                    allowed |= blocks_of(concept.evidence_ids)
+            if not allowed:
+                continue
+            stray = sorted(blocks_of(objective.evidence_ids) - allowed)
+            if stray:
+                yield self.finding(
+                    f"objective {objective.id} cites {', '.join(stray)}, which "
+                    "its concept does not rest on; an objective that needs "
+                    "other evidence is a new concept, not an objective",
+                    entity_id=objective.id,
+                    entity_kind="objective",
+                    details={"blocks": stray},
+                )
+
+
+class ObjectiveStaysInsideItsLesson(Rule):
+    code = "PEDA007"
+    stage = "semantic"
+    description = "An objective belongs to the lesson its concept belongs to."
+
+    def check(self, ctx):
+        if not ctx.schema_doc:
+            return
+        concepts = {c.id: c for c in ctx.schema_doc.concepts}
+        for objective in ctx.schema_doc.objectives:
+            for concept_id in objective.concept_ids:
+                concept = concepts.get(concept_id)
+                if concept is None:
+                    continue
+                if concept.lesson_id != objective.lesson_id:
+                    yield self.finding(
+                        f"objective {objective.id} sits in lesson "
+                        f"{objective.lesson_id} but its concept {concept_id} "
+                        f"is in {concept.lesson_id}",
+                        entity_id=objective.id,
+                        entity_kind="objective",
+                    )
+
+
+class NoDuplicateObjectives(Rule):
+    code = "PEDA008"
+    stage = "semantic"
+    severity = "warning"
+    description = "One concept must not carry the same objective twice."
+
+    def check(self, ctx):
+        if not ctx.schema_doc:
+            return
+        from content_assistant.models.content import id_slug
+
+        seen: Dict[tuple, str] = {}
+        for objective in ctx.schema_doc.objectives:
+            for concept_id in objective.concept_ids:
+                key = (concept_id, id_slug(objective.statement))
+                if key in seen:
+                    yield self.finding(
+                        f"objective {objective.id} repeats {seen[key]} on "
+                        f"concept {concept_id}",
+                        entity_id=objective.id,
+                        entity_kind="objective",
+                    )
+                seen[key] = objective.id
+
+
+class ObjectiveWordingIsTheBooks(Rule):
+    code = "PEDA009"
+    stage = "semantic"
+    severity = "review"
+    description = "An objective should be worded the way its lesson words things."
+
+    def check(self, ctx):
+        if not ctx.schema_doc:
+            return
+        for objective in ctx.schema_doc.objectives:
+            if objective.out_of_book_vocabulary:
+                words = "، ".join(objective.out_of_book_vocabulary[:8])
+                yield self.finding(
+                    f"objective {objective.id} is written with wording the "
+                    f"lesson never uses ({words}); a person should read it",
+                    entity_id=objective.id,
+                    entity_kind="objective",
+                    details={"words": objective.out_of_book_vocabulary},
+                )
+
+
+class ObjectiveTypeSuitsItsConcept(Rule):
+    code = "PEDA010"
+    stage = "semantic"
+    severity = "review"
+    description = "An objective's kind must suit the kind of concept it serves."
+
+    def check(self, ctx):
+        if not ctx.schema_doc:
+            return
+        from content_assistant.models.objective import type_fits_concept
+
+        concepts = {c.id: c for c in ctx.schema_doc.concepts}
+        for objective in ctx.schema_doc.objectives:
+            for concept_id in objective.concept_ids:
+                concept = concepts.get(concept_id)
+                if concept is None:
+                    continue
+                if not type_fits_concept(
+                    objective.objective_type, concept.concept_type
+                ):
+                    yield self.finding(
+                        f"objective {objective.id} is "
+                        f"{objective.objective_type!r} but concept "
+                        f"{concept_id} is {concept.concept_type!r}; asking for "
+                        "the wrong kind of performance measures the wrong "
+                        "thing",
+                        entity_id=objective.id,
+                        entity_kind="objective",
+                    )
+
+
+class ObjectiveIsNotAWish(Rule):
+    code = "PEDA011"
+    stage = "semantic"
+    severity = "review"
+    description = "An objective must name a behaviour, not a state of mind."
+
+    def check(self, ctx):
+        """Read the statement itself rather than trusting ``observable``.
+
+        PEDA001 reports what the extractor concluded; this reports what the
+        sentence says. Checking the text independently is the only way a
+        mislabelled objective ever surfaces.
+        """
+        if not ctx.schema_doc:
+            return
+        from content_assistant.models.objective import is_vague
+
+        for objective in ctx.schema_doc.objectives:
+            if is_vague(objective.statement):
+                yield self.finding(
+                    f"objective {objective.id} asks the student to know or "
+                    "understand something; nobody can observe that, so it "
+                    "cannot be assessed",
+                    entity_id=objective.id,
+                    entity_kind="objective",
+                )
+
+
 class MisconceptionIsGuarded(Rule):
     code = "PEDA004"
     stage = "semantic"
@@ -763,6 +936,12 @@ ALL_RULES: Sequence[Rule] = (
     ObjectiveHasConcept(),
     NoDuplicateConcepts(),
     WordingIsTheBooks(),
+    ObjectiveRestsOnItsConceptsEvidence(),
+    ObjectiveStaysInsideItsLesson(),
+    NoDuplicateObjectives(),
+    ObjectiveWordingIsTheBooks(),
+    ObjectiveTypeSuitsItsConcept(),
+    ObjectiveIsNotAWish(),
     MisconceptionIsGuarded(),
     RelationsAreWellFormed(),
     PrerequisiteGraphIsAcyclic(),

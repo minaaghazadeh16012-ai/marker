@@ -42,6 +42,14 @@ ConceptType = Literal[
     "conceptual", "procedural", "representational", "language", "meta"
 ]
 
+#: What a student visibly does to satisfy an objective. Closed, and short on
+#: purpose: nothing here can be met by thinking about something. The verbs that
+#: realise each kind, and which kinds suit which concept type, live in
+#: :mod:`content_assistant.models.objective`.
+ObjectiveType = Literal[
+    "name", "identify", "describe", "classify", "compare", "perform"
+]
+
 #: How an objective can be evidenced or assessed.
 ContentType = Literal[
     "text", "image", "audio", "interactive", "handwriting", "physical"
@@ -249,6 +257,11 @@ class LearningObjective(Grounded):
     lesson_id: str
     section_id: Optional[str] = None
     statement: str
+    #: What the student visibly does. The closed vocabulary and the rules for
+    #: pairing it with a concept type live in
+    #: :mod:`content_assistant.models.objective`, which is versioned apart from
+    #: this file because it encodes pedagogical judgement rather than shape.
+    objective_type: ObjectiveType = "identify"
     #: The action the student performs - what makes an objective assessable.
     performance_verb: str = ""
     #: False marks an objective that cannot be observed, so it is flagged
@@ -257,6 +270,11 @@ class LearningObjective(Grounded):
     concept_ids: List[str] = Field(default_factory=list)
     skill_id: Optional[str] = None
     content_types: List[ContentType] = Field(default_factory=list)
+    #: Words in the statement that the lesson never uses, with this pipeline's
+    #: own performance verbs already subtracted. Same meaning as the field of
+    #: the same name on :class:`Concept`: a signal to read the sentence, never
+    #: a reason to drop the citation.
+    out_of_book_vocabulary: List[str] = Field(default_factory=list)
 
 
 class Skill(Grounded):

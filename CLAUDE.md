@@ -65,7 +65,7 @@ measured, traceable L0 artifact. See [content_assistant/README.md](content_assis
 python -m content_assistant.extraction.pipeline \
     --pdf book.pdf --out work-dir --marker "<path to marker_single>"
 
-python -m unittest discover -s content_assistant/tests -t .   # 50 tests, no deps
+python -m unittest discover -s content_assistant/tests -t .   # 281 tests, no deps
 ```
 
 Key facts when working on it:
@@ -81,5 +81,12 @@ Key facts when working on it:
 - Three page numbers are kept distinct on purpose: `pdf_page_index` (0-based,
   Marker's `page_id`), `pdf_page` (1-based), `printed_page` (on the paper, or
   `null`). `page_offset` is derived from footer evidence, never assumed.
+- The semantic layer runs in stages, each consuming the previous one's
+  artifacts: concepts ([structuring/semantic/concepts.py](content_assistant/structuring/semantic/concepts.py))
+  then objectives ([structuring/semantic/objectives.py](content_assistant/structuring/semantic/objectives.py)).
+  An objective may only cite the blocks its own concept rests on, and its
+  confidence is capped at that concept's — so a stage can never be more certain
+  than the one it was derived from. Prompts are versioned by content hash under
+  `structuring/semantic/prompts/fa/`.
 - Tests use stdlib `unittest` because pytest is not a runtime dependency here;
   `pytest.ini` limits `testpaths` to `tests`, so Marker's own suite is unaffected.
