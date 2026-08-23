@@ -5,8 +5,9 @@ Turns a raw textbook PDF into a structured, traceable extraction artifact.
 This package sits **on top of** Marker. It imports Marker's public API and runs
 its CLI; it never modifies, forks, or patches anything under `marker/`.
 
-Only **L0 (extraction)** exists today. There is no Concept, Skill, Learning
-Objective, Misconception, Index, or Knowledge Graph here — see
+**L0 (extraction)** and the deterministic half of **L1 (structuring)** exist
+today. There is still no Concept, Skill, Learning Objective, Misconception,
+Index, or Knowledge Graph — and no model has been called — see
 [Not built yet](#not-built-yet).
 
 ---
@@ -207,16 +208,59 @@ Standard-library `unittest` — no pytest, no network, no PDF, no Marker run:
 python -m unittest discover -s content_assistant/tests -t .
 ```
 
+143 tests, all deterministic: no model, no network, no PDF, no Marker process.
+
+## L1 — deterministic structuring
+
+Everything L1 can do without a model is done, and proved, before a model is
+introduced. `structuring/segmentation.py` turns the L0 artifact into lessons
+and sections:
+
+- **Lesson boundaries** come from the contents spread: a lesson runs from its
+  printed page to the page before the next one starts.
+- **Lesson titles** are settled between two independent sources. The contents
+  page lists every lesson but sets its lettering along a curve, so words come
+  back split; a lesson's opening page states the title verbatim but only some
+  lessons have one. The opening page wins where it exists, the contents version
+  is kept in `title_alternatives`, and a lesson that opens straight into its
+  content falls back to that page's first printed heading.
+- **Sections** come from the book's own printed headings. A lesson that prints
+  none falls back to one section per page and records that in
+  `boundary_method`, so a fallback is never mistaken for a real heading.
+- **`material_profile`** measures what a lesson actually offers — characters,
+  blocks, images, headings — and classifies its text density. This is what
+  later decides whether a lesson can be read from its text at all.
+
+`validation/` runs before any model exists, on purpose: if the checks were
+written after seeing a model's first output they would be quietly shaped to
+accept it. Rules are grouped by the stage they can run at (`structure`,
+`semantic`, `final`) and each carries a stable code.
+
+`structuring/evidence.py` builds the **Evidence Unit** — the only thing a model
+is ever shown. One lesson, already segmented, every block labelled with the id
+it must cite. A model cannot invent a page number because it is never asked for
+one, and cannot cite outside the lesson because ids outside the unit are
+rejected on arrival.
+
+`structuring/verify.py` grounds what comes back: a citation outside the unit is
+discarded, and a quotation that cannot be found in the block it was attributed
+to **demotes** the claim from `explicit` to `inferred` rather than deleting it.
+Nothing in the verifier can raise a claim's level.
+
+`structuring/semantic/llm.py` is the model seam — a protocol, an adapter over
+Marker's existing `BaseService` (so no new SDK and every provider Marker
+supports), and a mock. No provider name appears anywhere except the import
+string an operator passes on the command line.
+
 ## Not built yet
 
-This phase is extraction only. Deliberately absent:
+Deliberately absent, and no model has been run:
 
 - Concept, Skill, Learning Objective, Misconception, Relation extraction
-- Content Schema, Content Index, Knowledge Graph
+- Content Schema assembly, Content Index, Knowledge Graph
 - the packaging step that emits a self-contained Content Package
-- any LLM call, and any use of the page images beyond storing them
-- lesson boundary detection (the contents mapping is extracted, but nothing
-  yet turns it into lesson ranges — that is L1)
+- any real LLM call, and any use of the page images beyond storing them
+  and flagging which lessons need them
 
 ## When OCR will be needed
 

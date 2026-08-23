@@ -36,6 +36,7 @@ from content_assistant.extraction.recovery import (
 from content_assistant.models.extraction import (
     Asset,
     Block,
+    BookIdentity,
     DocumentInfo,
     ExtractionConfig,
     ExtractionResult,
@@ -162,6 +163,36 @@ def build_page_map(
 # pipeline
 # ---------------------------------------------------------------------------
 
+def _section_hierarchy_resolver(
+    marker_blocks: Sequence[mb.MarkerBlock],
+    carried: Optional[Dict[str, str]],
+):
+    """Build a lookup that gives a rescued line the headings it sits under.
+
+    Recovered lines never passed through Marker's layout pass, so they carry no
+    ``section_hierarchy`` of their own - and they are exactly the lines that
+    were hardest to get, so leaving them orphaned from the heading chain would
+    waste the rescue. The heading state that applies to a line is the one
+    belonging to the nearest rendered block *above* it on the page; failing
+    that, whatever was in force when the page opened.
+    """
+    anchors = sorted(
+        (b for b in marker_blocks if b.section_hierarchy),
+        key=lambda b: b.bbox[1],
+    )
+
+    def resolve(bbox: Sequence[float]) -> Optional[Dict[str, str]]:
+        above = [a for a in anchors if a.bbox[1] <= bbox[1]]
+        if above:
+            return dict(above[-1].section_hierarchy or {})
+        if anchors:
+            return dict(anchors[0].section_hierarchy or {})
+        return dict(carried) if carried else None
+
+    return resolve
+
+
+
 
 def run_pipeline(
     *,
@@ -173,6 +204,7 @@ def run_pipeline(
     page_range: Optional[str] = None,
     force: bool = False,
     raw_pages: Optional[Dict[int, RawPage]] = None,
+    book: Optional[BookIdentity] = None,
 ) -> ExtractionResult:
     config = config or ExtractionConfig()
     normalization = normalization or PersianNormalizationConfig()
@@ -191,6 +223,9 @@ def run_pipeline(
 
     pages: List[Page] = []
     toc: List[TocEntry] = []
+    #: Heading state at the end of the previous page, so a page that opens with
+    #: rescued text before any rendered block still knows where it sits.
+    carried_hierarchy: Optional[Dict[str, str]] = None
 
     for marker_page in run.pages:
         index = marker_page.pdf_page_index
@@ -220,7 +255,11 @@ def run_pipeline(
                         asset_id=asset_id,
                         pdf_page=index + 1,
                         bbox=block.bbox,
-                        path=str(Path(path).relative_to(out_dir)) if path else "",
+                        path=(
+                            Path(path).relative_to(out_dir).as_posix()
+                            if path
+                            else ""
+                        ),
                     )
                 )
             clean = normalize(block.text, normalization)
@@ -239,6 +278,9 @@ def run_pipeline(
             )
 
         if diagnostics.is_recovery_candidate:
+            hierarchy_for = _section_hierarchy_resolver(
+                marker_page.blocks, carried_hierarchy
+            )
             missing, duplicates = recover_lines(
                 raw_lines=raw_lines,
                 existing_text_bboxes=text_bboxes_of(block_dicts),
@@ -260,6 +302,7 @@ def run_pipeline(
                         bbox=line.bbox,
                         polygon=polygon_from_bbox(line.bbox),
                         source="pdfprovider_recovery",
+                        section_hierarchy=hierarchy_for(line.bbox),
                     )
                 )
 
@@ -272,6 +315,12 @@ def run_pipeline(
                     config=config,
                 )
             )
+
+        last_hierarchy = [
+            b.section_hierarchy for b in marker_page.blocks if b.section_hierarchy
+        ]
+        if last_hierarchy:
+            carried_hierarchy = dict(last_hierarchy[-1])
 
         printed, printed_source = page_map.get(index, (None, None))
         pages.append(
@@ -290,6 +339,7 @@ def run_pipeline(
         source=pdf_path.name,
         source_sha256=mb.sha256_of(pdf_path),
         page_count=len(run.pages),
+        book=book or BookIdentity(),
         page_offset=offset,
         page_offset_evidence=offset_evidence,
     )
@@ -377,7 +427,21 @@ def main(argv: Optional[Sequence[str]] = None) -> int:
     parser.add_argument("--marker", required=True, help="path to marker_single")
     parser.add_argument("--page-range", default=None)
     parser.add_argument("--force", action="store_true")
+    # Book identity is declared, never inferred - see BookIdentity.
+    parser.add_argument("--book-id", default=None)
+    parser.add_argument("--grade", type=int, default=None)
+    parser.add_argument("--subject", default=None)
+    parser.add_argument("--language", default="fa")
+    parser.add_argument("--book-title", default=None)
     args = parser.parse_args(argv)
+
+    book = BookIdentity(
+        book_id=args.book_id,
+        grade=args.grade,
+        subject=args.subject,
+        language=args.language,
+        title=args.book_title,
+    )
 
     pdf_path = Path(args.pdf)
     out_dir = Path(args.out)
@@ -391,6 +455,7 @@ def main(argv: Optional[Sequence[str]] = None) -> int:
         page_range=args.page_range,
         force=args.force,
         raw_pages=raw_pages,
+        book=book,
     )
     report = build_validation_report(result)
 

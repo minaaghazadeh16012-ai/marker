@@ -126,7 +126,9 @@ class PageDiagnostics(BaseModel):
     pdf_page: int
     raw_chars: int
     marker_chars: int
-    recovery_ratio: Optional[float]
+    #: None on a page with no text layer at all. Needs a default: the artifact
+    #: is written with exclude_none, so a missing key must still load back.
+    recovery_ratio: Optional[float] = None
     raw_lines: int
     marker_text_blocks: int
     picture_area_frac: float
@@ -175,10 +177,30 @@ class PageOffsetEvidence(BaseModel):
     method: str = "page_footer_majority"
 
 
+class BookIdentity(BaseModel):
+    """Who this book is. Declared explicitly, never inferred.
+
+    Identity drives every stable id downstream, so it is supplied by the
+    operator rather than guessed from the content: a wrong ``grade`` would
+    silently mis-file a whole book, and an LLM has no business deciding it.
+    All fields are optional so an older artifact still loads, but the L1
+    validation rules require them before any structuring happens.
+    """
+
+    book_id: Optional[str] = None
+    grade: Optional[int] = None
+    subject: Optional[str] = None
+    language: str = "fa"
+    title: Optional[str] = None
+    edition: Optional[str] = None
+
+
 class DocumentInfo(BaseModel):
     source: str
     source_sha256: str
     page_count: int
+    #: Explicit book identity; empty on artifacts produced before v0.2.
+    book: BookIdentity = Field(default_factory=BookIdentity)
     page_offset: Optional[int] = None
     page_offset_evidence: PageOffsetEvidence = Field(
         default_factory=PageOffsetEvidence
