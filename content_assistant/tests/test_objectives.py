@@ -42,6 +42,7 @@ from content_assistant.structuring.semantic.concepts import ground_proposals
 from content_assistant.structuring.semantic.llm import MockLLMClient
 from content_assistant.structuring.semantic.objectives import (
     MAX_OBJECTIVES_PER_CONCEPT,
+    ModelCallFailed,
     build_objective_prompt,
     concept_blocks,
     extract_objectives,
@@ -879,6 +880,43 @@ class ObjectivePromptTests(ObjectiveFixture):
         self.assertIn(self.conceptual.id, prompt)
         self.assertEqual(result.model_id, "mock")
         self.assertTrue(result.prompt_version)
+
+    def test_a_failed_call_is_not_a_lesson_without_objectives(self):
+        """Measured on the real book: ten lessons in a row reported
+        "0 objectives, validation ok" while every call behind them had failed
+        on quota. Marker's services return ``{}`` once their retries are
+        exhausted, and ``{}`` validates into a well-formed reply with no
+        objectives - indistinguishable from a model that read the lesson and
+        correctly found nothing.
+
+        Saying a lesson has no objectives is a claim about the book. A call
+        that never arrived may not make it.
+        """
+        client = MockLLMClient(responses=[{}])
+        with self.assertRaises(ModelCallFailed):
+            extract_objectives(
+                unit=self.unit,
+                concepts=self.concepts,
+                evidence=self.evidence,
+                client=client,
+                document_id=BOOK,
+            )
+
+    def test_a_model_that_genuinely_found_nothing_is_believed(self):
+        # The other half: an empty list is a real answer and must survive.
+        client = MockLLMClient(responses=[{"objectives": [], "notes": "هیچ"}])
+        result, raw, _ = extract_objectives(
+            unit=self.unit,
+            concepts=self.concepts,
+            evidence=self.evidence,
+            client=client,
+            document_id=BOOK,
+        )
+        self.assertEqual(result.objectives, [])
+        self.assertEqual(raw.notes, "هیچ")
+        self.assertEqual(
+            len(result.concepts_without_objectives), len(self.concepts)
+        )
 
     def test_ids_are_derived_so_a_rerun_is_byte_identical(self):
         first = self.ground(

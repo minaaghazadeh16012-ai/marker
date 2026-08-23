@@ -91,6 +91,23 @@ OBJECTIVE_DUPLICATE_OVERLAP = 0.75
 MAX_OBJECTIVES_PER_CONCEPT = 3
 
 
+class ModelCallFailed(RuntimeError):
+    """The provider returned nothing usable, and that is not an answer.
+
+    Marker's services return an empty dict when their retries are exhausted -
+    a 429, a timeout, an unparseable reply all end the same way. Validated
+    against the response schema, ``{}`` becomes a perfectly well-formed reply
+    with zero objectives, which is indistinguishable from a model that read
+    the lesson and correctly concluded there was nothing to write.
+
+    That collapse was measured, not imagined: ten lessons in a row recorded
+    "0 objectives, validation ok" while every call behind them had failed on
+    quota. An artifact that says a lesson has no objectives is a claim about
+    the book, and it may not be produced by a call that never arrived.
+    """
+
+
+
 # ---------------------------------------------------------------------------
 # prompt
 # ---------------------------------------------------------------------------
@@ -565,11 +582,21 @@ def extract_objectives(
     template = template or load_objective_prompt()
     prompt = build_objective_prompt(unit, concepts, evidence, template)
     request = LLMRequest(prompt=prompt, response_schema=ObjectiveResponse)
-    raw = client.complete(request)
-    if not isinstance(raw, ObjectiveResponse):
-        raw = ObjectiveResponse.model_validate(
-            raw if isinstance(raw, dict) else raw.model_dump()
-        )
+    reply = client.complete(request)
+    if isinstance(reply, ObjectiveResponse):
+        raw = reply
+    else:
+        payload = reply if isinstance(reply, dict) else reply.model_dump()
+        # A model that found nothing still answers with the field, empty. A
+        # call that never landed has no field at all, and the difference is
+        # the whole point - see :class:`ModelCallFailed`.
+        if "objectives" not in payload:
+            raise ModelCallFailed(
+                "the provider returned no 'objectives' field; the call "
+                "failed rather than finding nothing. Nothing was written "
+                "for this lesson."
+            )
+        raw = ObjectiveResponse.model_validate(payload)
     admission = admit_objective_proposals(
         raw, concept_blocks(concepts, evidence)
     )
