@@ -238,6 +238,10 @@ class Concept(Grounded):
     #: Ids this concept absorbed during cross-referencing, so a merge is
     #: reversible and reviewable rather than silent.
     merged_from: List[str] = Field(default_factory=list)
+    #: Words in the label or definition that the lesson never uses. A quotation
+    #: can verify perfectly while the sentence around it imports vocabulary the
+    #: book does not have - this records that, without touching the citation.
+    out_of_book_vocabulary: List[str] = Field(default_factory=list)
 
 
 class LearningObjective(Grounded):

@@ -579,6 +579,28 @@ class NoDuplicateConcepts(Rule):
             seen[key] = concept.id
 
 
+class WordingIsTheBooks(Rule):
+    code = "PEDA005"
+    stage = "semantic"
+    severity = "review"
+    description = "A concept should be worded the way its lesson words things."
+
+    def check(self, ctx):
+        if not ctx.schema_doc:
+            return
+        for concept in ctx.schema_doc.concepts:
+            if concept.out_of_book_vocabulary:
+                words = "، ".join(concept.out_of_book_vocabulary[:8])
+                yield self.finding(
+                    f"concept {concept.id} is explained with wording the lesson "
+                    f"never uses ({words}); the citation still stands, but a "
+                    "person should read the sentence",
+                    entity_id=concept.id,
+                    entity_kind="concept",
+                    details={"words": concept.out_of_book_vocabulary},
+                )
+
+
 class MisconceptionIsGuarded(Rule):
     code = "PEDA004"
     stage = "semantic"
@@ -740,6 +762,7 @@ ALL_RULES: Sequence[Rule] = (
     ObjectiveIsObservable(),
     ObjectiveHasConcept(),
     NoDuplicateConcepts(),
+    WordingIsTheBooks(),
     MisconceptionIsGuarded(),
     RelationsAreWellFormed(),
     PrerequisiteGraphIsAcyclic(),

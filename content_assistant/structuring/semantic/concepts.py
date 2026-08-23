@@ -36,6 +36,7 @@ from content_assistant.structuring.verify import (
     verify_claim,
 )
 from content_assistant.models.content import id_slug
+from content_assistant.text.vocabulary import VocabularyConfig, check_wording
 
 PROMPT_DIR = Path(__file__).parent / "prompts"
 
@@ -262,6 +263,7 @@ def ground_proposals(
     document_id: str,
     prompt_version: str = "",
     model_id: str = "",
+    vocabulary_config: Optional[VocabularyConfig] = None,
 ) -> ConceptExtractionResult:
     """Turn admitted proposals into grounded concepts, or drop them."""
     result = ConceptExtractionResult(
@@ -303,6 +305,21 @@ def ground_proposals(
         breakdown = compute_confidence(outcome, proposal, unit)
         needs_review, reasons = review_reasons(outcome, breakdown.score, proposal)
 
+        # The citation may be perfect while the wording around it is not the
+        # book's. That never invalidates the citation - it only means a person
+        # has to read the sentence.
+        foreign_words = check_wording(
+            label=proposal.label,
+            definition=proposal.definition,
+            lesson_texts=list(texts.values()),
+            config=vocabulary_config,
+        )
+        if foreign_words:
+            needs_review = True
+            reasons.append(
+                "wording is not the book's: " + "، ".join(foreign_words[:8])
+            )
+
         concept_id = make_id(
             unit.book_id,
             "concept",
@@ -325,6 +342,7 @@ def ground_proposals(
                 confidence=breakdown.score,
                 requires_human_review=needs_review,
                 review_reasons=reasons,
+                out_of_book_vocabulary=foreign_words,
             )
         )
         result.confidence_breakdowns[concept_id] = breakdown
