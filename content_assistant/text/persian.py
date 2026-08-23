@@ -99,16 +99,29 @@ def fix_double_alef(text: str) -> str:
     return text.replace(_ALEF + _ALEF + _LAM, _ALEF + _LAM + _ALEF)
 
 
+#: ``ا`` followed by ``ل``, reading past any vocalisation between the two.
+#:
+#: The marks are the whole point. The PDFs behind these books emit ``خلّاقیت``
+#: as ``خاّلقیت``, leaving the shadda sitting between the two swapped letters,
+#: so a plain ``"ال" in word`` test reads straight past it and reports nothing.
+#: A review aid that silently skips a word is worse than no aid at all.
+_SUSPECT_LAM_ALEF_RE = re.compile(f"{_ALEF}[{re.escape(_COMBINING)}]*{_LAM}")
+
+
 def find_suspect_lam_alef(text: str) -> List[str]:
     """Report words that *may* carry a reversed lam-alef, without changing them.
 
-    The pattern looked for is ``ا`` immediately followed by ``ل`` inside a
-    word. That is legitimate in many words (``سال``, ``مال``, ``حال``), so this
-    is a review aid, never an edit.
+    The pattern looked for is ``ا`` followed by ``ل`` inside a word, ignoring
+    any combining marks that sit between them. That is legitimate in many
+    words (``سال``, ``مال``, ``حال``), so this is a review aid, never an edit.
+
+    A word whose *first* such pair starts at position zero is left out: ``ال``
+    at the head of a word is ordinary, not a reversed ligature.
     """
     out = []
     for word in re.findall(r"[؀-ۿ‌]+", text):
-        if _ALEF + _LAM in word and not word.startswith(_ALEF + _LAM):
+        found = _SUSPECT_LAM_ALEF_RE.search(word)
+        if found and found.start() != 0:
             out.append(word)
     return out
 

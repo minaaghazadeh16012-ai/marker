@@ -80,6 +80,32 @@ class PersianNormalizationTests(unittest.TestCase):
         self.assertEqual(persian.normalize("کالس"), "کالس")
         self.assertIn("کالس", persian.find_suspect_lam_alef("در کالس درس"))
 
+    def test_a_mark_between_alef_and_lam_does_not_hide_a_suspect(self):
+        # Measured on the real book: the text layer emits خلّاقیت as خاّلقیت,
+        # leaving the shadda sitting between the two swapped letters. A
+        # literal "ال" test reads straight past that, so the one word whose
+        # mangling actually cost a finding was the one word never reported.
+        mangled = "خاّلقیت"          # خ + ا + shadda + ل + ق + ی + ت
+        self.assertIn(mangled, persian.find_suspect_lam_alef(mangled))
+        self.assertIn(
+            mangled, persian.find_suspect_lam_alef(f"فکر و {mangled} و ذوق")
+        )
+
+    def test_reporting_the_vocalised_form_does_not_start_repairing_it(self):
+        # The module reports ambiguous ligatures; it never rewrites them.
+        mangled = "خاّلقیت"
+        self.assertEqual(persian.normalize(mangled), mangled)
+
+    def test_tolerating_marks_does_not_widen_what_counts_as_a_suspect(self):
+        # Unchanged behaviour, pinned: a leading ال is ordinary and stays out,
+        # with or without vocalisation, and a word with no ا-ل pair is silent.
+        self.assertEqual(persian.find_suspect_lam_alef("الزم"), [])
+        self.assertEqual(persian.find_suspect_lam_alef("اّلزم"), [])
+        self.assertEqual(persian.find_suspect_lam_alef("کتاب سنگ آب"), [])
+        for word in ("سال", "حال", "سالمت", "کالس"):
+            with self.subTest(word=word):
+                self.assertIn(word, persian.find_suspect_lam_alef(word))
+
     def test_isolated_diacritic_is_dropped(self):
         self.assertEqual(persian.drop_isolated_marks("گرم ّ تر"), "گرم  تر")
 
