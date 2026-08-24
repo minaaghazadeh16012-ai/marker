@@ -100,6 +100,14 @@ Key facts when working on it:
   confidence is capped at that concept's — so a stage can never be more certain
   than the one it was derived from. Prompts are versioned by content hash under
   `structuring/semantic/prompts/fa/`.
+- **L2 is complete and frozen for the grade-1 science book**: 14/14 lessons,
+  73 concepts, 79 objectives, 82/82 quotations verified by exact match, zero
+  citing outside their concept. Measurements, known limits and the thresholds
+  that were deliberately *not* moved are in
+  [content_assistant/L2_QUALITY_REPORT.md](content_assistant/L2_QUALITY_REPORT.md).
+  Read it before re-tuning anything in the semantic layer — in particular, the
+  auto-accept floor is not the reason nothing auto-accepts, and lowering it
+  changes nothing at any value.
 - **A failed model call is not an empty answer.** Marker's services return `{}`
   once their retries are exhausted, which validates into a well-formed reply
   carrying no items. Both semantic stages check for the response field itself

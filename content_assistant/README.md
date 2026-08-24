@@ -8,10 +8,12 @@ This package sits **on top of** Marker. It imports Marker's public API and runs
 its CLI; it never modifies, forks, or patches anything under `marker/`.
 
 **L0 (extraction)**, **L1 (structuring)** and the first two semantic stages —
-**concepts** and **learning objectives** — exist today, and have been run
-against the real grade-1 science book with a real model. Skills,
-misconceptions, relations, the Content Index and the Knowledge Graph are still
-absent; see [Not built yet](#not-built-yet).
+**concepts** and **learning objectives** — exist today and are **complete for
+the grade-1 science book**: all 14 lessons, 73 concepts, 79 objectives, every
+quotation verified. That run is frozen and reported in
+[L2_QUALITY_REPORT.md](L2_QUALITY_REPORT.md). Skills, misconceptions,
+relations, the Content Index and the Knowledge Graph are still absent; see
+[Not built yet](#not-built-yet).
 
 ---
 
@@ -285,21 +287,36 @@ its way around:
 - **An objective's confidence is capped at its concept's.** A claim about an
   idea cannot be better evidenced than the idea.
 
-Measured over the four lessons run so far: **24 objectives from 23 concepts,
-100% of quotations verified, zero objectives citing outside their concept.**
-Four objectives were flagged for wording, and reading them back, all four are
-the two known false-positive classes described below rather than imported
-knowledge.
+Measured over the whole book: **79 objectives from 73 concepts, 82 of 82
+quotations verified by exact match, zero objectives citing outside their
+concept, zero rejected, zero ungrounded.**
+
+Six objectives were flagged for wording. Read back against their lessons,
+five are the two known false-positive classes described below; the sixth,
+`قرار` in lesson 1, is genuinely absent from that lesson but is a light-verb
+component carrying almost no meaning. No general knowledge and no term above
+the book's level entered any of the 79.
 
 ### What the scoring does *not* do
 
-Nothing here auto-accepts anything on this book, and that is worth stating
-plainly rather than discovering later: the highest concept confidence measured
-is `0.845` against an auto-accept floor of `0.85`, so with the cap in place no
-objective can reach it. Every concept is independently already under review.
-`requires_human_review` is therefore true for everything this book produced —
-correct, but carrying no information. Calibrating those thresholds is a
-pedagogical decision and has deliberately not been made in code.
+Nothing here auto-accepts anything on this book, and the reason is worth
+stating plainly so nobody rediscovers it by trying. The auto-accept floor is
+`0.85` and the highest concept confidence is `0.845`, so the cap alone puts it
+out of reach — but lowering the floor does not help either:
+
+| threshold | pass on confidence | pass with no other review reason |
+|---|---|---|
+| 0.85 | 0 / 79 | **0** |
+| 0.80 | 16 / 79 | **0** |
+| 0.75 | 20 / 79 | **0** |
+| 0.70 | 66 / 79 | **0** |
+
+Every concept is already under review and that inherits, so the threshold is
+not the binding constraint at any value. `requires_human_review` is true for
+all 79 — correct, and carrying no information. Making it discriminate would
+mean turning the inherited flag into a factor rather than an independent
+reason, which is an architectural change and has deliberately not been made
+here.
 
 ### The wording check
 
