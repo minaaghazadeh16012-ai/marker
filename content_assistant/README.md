@@ -1,14 +1,17 @@
-# Content Assistant — L0 Extraction
+# Content Assistant
 
-Turns a raw textbook PDF into a structured, traceable extraction artifact.
+Turns a raw textbook PDF into a structured, traceable, measured artifact:
+pages and blocks, then lessons and sections, then the concepts a lesson
+teaches and the objectives a student can be seen meeting.
 
 This package sits **on top of** Marker. It imports Marker's public API and runs
 its CLI; it never modifies, forks, or patches anything under `marker/`.
 
-**L0 (extraction)** and the deterministic half of **L1 (structuring)** exist
-today. There is still no Concept, Skill, Learning Objective, Misconception,
-Index, or Knowledge Graph — and no model has been called — see
-[Not built yet](#not-built-yet).
+**L0 (extraction)**, **L1 (structuring)** and the first two semantic stages —
+**concepts** and **learning objectives** — exist today, and have been run
+against the real grade-1 science book with a real model. Skills,
+misconceptions, relations, the Content Index and the Knowledge Graph are still
+absent; see [Not built yet](#not-built-yet).
 
 ---
 
@@ -208,7 +211,7 @@ Standard-library `unittest` — no pytest, no network, no PDF, no Marker run:
 python -m unittest discover -s content_assistant/tests -t .
 ```
 
-143 tests, all deterministic: no model, no network, no PDF, no Marker process.
+285 tests, all deterministic: no model, no network, no PDF, no Marker process.
 
 ## L1 — deterministic structuring
 
@@ -252,15 +255,76 @@ Marker's existing `BaseService` (so no new SDK and every provider Marker
 supports), and a mock. No provider name appears anywhere except the import
 string an operator passes on the command line.
 
+## L2 — concepts and objectives
+
+The semantic stages run in order, each consuming the one before it, and each
+scored by what could be checked rather than by what the model asserted.
+
+### Concepts
+
+A model is shown one Evidence Unit and asked what the lesson teaches. What
+comes back is admitted only if it cites blocks that exist in that unit, and
+grounded only if its quotations are found in the blocks it attributed them to.
+
+Measured over the whole book: **73 concepts across 14 lessons, 90 citations,
+100% of quotations verified.**
+
+### Objectives
+
+An objective is a claim about what a student does with a concept, so it is
+derived from concepts rather than from the lesson, and three properties are
+structural rather than editorial — editorial rules being the ones a model talks
+its way around:
+
+- **An objective may only cite its own concept's blocks.** One needing other
+  evidence is asserting something its concept does not, which is a new concept
+  wearing an objective's clothes.
+- **An objective must name a performance from a closed lexicon.** `بداند` and
+  `درک کند` name states of mind; nobody can say whether they happened. The
+  lexicon lives in `models/objective.py` and is versioned on its own.
+- **An objective's confidence is capped at its concept's.** A claim about an
+  idea cannot be better evidenced than the idea.
+
+Measured over the four lessons run so far: **24 objectives from 23 concepts,
+100% of quotations verified, zero objectives citing outside their concept.**
+Four objectives were flagged for wording, and reading them back, all four are
+the two known false-positive classes described below rather than imported
+knowledge.
+
+### What the scoring does *not* do
+
+Nothing here auto-accepts anything on this book, and that is worth stating
+plainly rather than discovering later: the highest concept confidence measured
+is `0.845` against an auto-accept floor of `0.85`, so with the cap in place no
+objective can reach it. Every concept is independently already under review.
+`requires_human_review` is therefore true for everything this book produced —
+correct, but carrying no information. Calibrating those thresholds is a
+pedagogical decision and has deliberately not been made in code.
+
+### The wording check
+
+Both stages ask whether a claim is phrased in the lesson's own words, which is
+the half of grounding that quote verification cannot see: every citation can
+match exactly while the sentence built around it imports vocabulary the book
+never uses. `text/vocabulary.py` carries that check and the measurements behind
+its tuning.
+
+Two known sources of false positives are documented rather than hidden. The
+book's text layer reverses the lam-alef ligature (`کلاس` arrives as `کالس`),
+so a correctly spelled word can be reported as absent from a lesson that in
+fact contains it; `text/persian.py` reports these for review rather than
+guessing at a repair. And prefix matching cannot see a Persian *prefix*, so
+`متفاوت` in the book does not vouch for `تفاوت` in a claim.
+
 ## Not built yet
 
-Deliberately absent, and no model has been run:
+Deliberately absent:
 
-- Concept, Skill, Learning Objective, Misconception, Relation extraction
-- Content Schema assembly, Content Index, Knowledge Graph
+- Skill, Misconception and Relation extraction
+- Content Index and Knowledge Graph
 - the packaging step that emits a self-contained Content Package
-- any real LLM call, and any use of the page images beyond storing them
-  and flagging which lessons need them
+- any use of the page images beyond storing them and flagging which lessons
+  need them
 
 ## When OCR will be needed
 

@@ -55,7 +55,10 @@ from content_assistant.structuring.semantic.concepts import (
     load_prompt,
     material_note,
 )
-from content_assistant.structuring.semantic.llm import LLMRequest
+from content_assistant.structuring.semantic.llm import (
+    LLMRequest,
+    ModelCallFailed,
+)
 from content_assistant.structuring.semantic.proposals import (
     ObjectiveAdmissionResult,
     ObjectiveProposal,
@@ -89,23 +92,6 @@ OBJECTIVE_DUPLICATE_OVERLAP = 0.75
 #: first-grade concept that genuinely supports four distinct performances is
 #: rare enough to be worth a person's glance.
 MAX_OBJECTIVES_PER_CONCEPT = 3
-
-
-class ModelCallFailed(RuntimeError):
-    """The provider returned nothing usable, and that is not an answer.
-
-    Marker's services return an empty dict when their retries are exhausted -
-    a 429, a timeout, an unparseable reply all end the same way. Validated
-    against the response schema, ``{}`` becomes a perfectly well-formed reply
-    with zero objectives, which is indistinguishable from a model that read
-    the lesson and correctly concluded there was nothing to write.
-
-    That collapse was measured, not imagined: ten lessons in a row recorded
-    "0 objectives, validation ok" while every call behind them had failed on
-    quota. An artifact that says a lesson has no objectives is a claim about
-    the book, and it may not be produced by a call that never arrived.
-    """
-
 
 
 # ---------------------------------------------------------------------------

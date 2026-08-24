@@ -35,7 +35,10 @@ from content_assistant.structuring.semantic.concepts import (
     material_note,
     render_evidence_blocks,
 )
-from content_assistant.structuring.semantic.llm import MockLLMClient
+from content_assistant.structuring.semantic.llm import (
+    MockLLMClient,
+    ModelCallFailed,
+)
 from content_assistant.structuring.semantic.proposals import (
     REJECT_ALL_CITATIONS_FOREIGN,
     REJECT_NO_CITATION,
@@ -442,6 +445,32 @@ class EndToEndWithMockTests(unittest.TestCase):
         self.assertNotIn("/page/42/", sent)
         for block_id in self.unit.citable_block_ids():
             self.assertIn(block_id, sent)
+
+    def test_a_failed_call_is_not_a_lesson_without_concepts(self):
+        """Marker's services return ``{}`` once their retries are exhausted,
+        and ``{}`` validates into a well-formed reply carrying no concepts -
+        indistinguishable from a model that read the lesson and correctly
+        found nothing.
+
+        Measured on the objective stage, which shares this seam: ten lessons
+        in a row wrote "0 items, validation ok" while every call behind them
+        had failed on quota. Saying a lesson holds nothing is a claim about
+        the book, and a call that never arrived may not make it.
+        """
+        client = MockLLMClient([{}])
+        with self.assertRaises(ModelCallFailed):
+            extract_concepts(
+                unit=self.unit, client=client, document_id=DOC
+            )
+
+    def test_a_model_that_genuinely_found_nothing_is_believed(self):
+        # The other half: an empty list is a real answer and must survive.
+        client = MockLLMClient([{"concepts": [], "notes": "هیچ"}])
+        result, raw, _ = extract_concepts(
+            unit=self.unit, client=client, document_id=DOC
+        )
+        self.assertEqual(result.concepts, [])
+        self.assertEqual(raw.notes, "هیچ")
 
     def test_images_are_only_sent_when_asked_for(self):
         client = MockLLMClient([ConceptResponse(concepts=[])])

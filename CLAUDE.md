@@ -59,18 +59,30 @@ There is no config file format — every tunable is an `Annotated` class attribu
 
 A second, independent package that sits **on top of** Marker and never modifies
 it. Marker is the extraction engine; `content_assistant` turns its output into a
-measured, traceable L0 artifact. See [content_assistant/README.md](content_assistant/README.md).
+measured, traceable artifact - first L0/L1, then the concepts a lesson
+teaches and the objectives derived from them. See [content_assistant/README.md](content_assistant/README.md).
 
 ```bash
 python -m content_assistant.extraction.pipeline \
     --pdf book.pdf --out work-dir --marker "<path to marker_single>"
 
-python -m unittest discover -s content_assistant/tests -t .   # 281 tests, no deps
+# semantic stages, in order - objectives take the concept stage's output
+python -m content_assistant.structuring.semantic.run_concepts --l0 work-dir/l0_extraction.json --lesson 4 --out l1-dir --llm marker.services.gemini.GoogleGeminiService
+python -m content_assistant.structuring.semantic.run_objectives --unit l1-dir/lesson-04/evidence-unit.json --concepts l1-dir/lesson-04/concept-verified.json --out l2-dir --llm marker.services.gemini.GoogleGeminiService
+
+python -m unittest discover -s content_assistant/tests -t .   # 285 tests, no deps
 ```
+
+Omitting `--llm` puts either runner in dry-run: it builds and writes the exact
+prompt and stops, without calling a model. Credentials are read from Marker's
+`local.env`, never passed on the command line.
 
 Key facts when working on it:
 
-- **No OCR, no LLM, no network, and no new dependencies.** The target books have
+- **No OCR, no network beyond the model call, and no new dependencies.**
+  Extraction and structuring are entirely deterministic and model-free; only
+  the semantic stages call a model, through Marker's own service layer. The
+  target books have
   a healthy text layer; the character loss Marker shows is a layout-classification
   effect (text inside `Picture`/`PictureGroup` boxes is swallowed), so it is
   recovered geometrically from `PdfProvider.page_lines` instead.
@@ -88,5 +100,10 @@ Key facts when working on it:
   confidence is capped at that concept's — so a stage can never be more certain
   than the one it was derived from. Prompts are versioned by content hash under
   `structuring/semantic/prompts/fa/`.
+- **A failed model call is not an empty answer.** Marker's services return `{}`
+  once their retries are exhausted, which validates into a well-formed reply
+  carrying no items. Both semantic stages check for the response field itself
+  and raise `ModelCallFailed` ([structuring/semantic/llm.py](content_assistant/structuring/semantic/llm.py))
+  rather than recording that a lesson has nothing in it.
 - Tests use stdlib `unittest` because pytest is not a runtime dependency here;
   `pytest.ini` limits `testpaths` to `tests`, so Marker's own suite is unaffected.

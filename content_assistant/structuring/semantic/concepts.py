@@ -22,7 +22,10 @@ from pydantic import BaseModel, Field
 
 from content_assistant.models.content import Concept, Evidence, make_id
 from content_assistant.structuring.evidence import EvidenceUnit
-from content_assistant.structuring.semantic.llm import LLMRequest
+from content_assistant.structuring.semantic.llm import (
+    LLMRequest,
+    ModelCallFailed,
+)
 from content_assistant.structuring.semantic.proposals import (
     AdmissionResult,
     ConceptProposal,
@@ -379,11 +382,21 @@ def extract_concepts(
         response_schema=ConceptResponse,
         image_paths=list(image_paths or []),
     )
-    raw = client.complete(request)
-    if not isinstance(raw, ConceptResponse):
-        raw = ConceptResponse.model_validate(
-            raw if isinstance(raw, dict) else raw.model_dump()
-        )
+    reply = client.complete(request)
+    if isinstance(reply, ConceptResponse):
+        raw = reply
+    else:
+        payload = reply if isinstance(reply, dict) else reply.model_dump()
+        # A model that found nothing still answers with the field, empty. A
+        # call that never landed has no field at all, and only the second is
+        # a failure - see :class:`ModelCallFailed`.
+        if "concepts" not in payload:
+            raise ModelCallFailed(
+                "the provider returned no 'concepts' field; the call failed "
+                "rather than finding nothing. Nothing was written for this "
+                "lesson."
+            )
+        raw = ConceptResponse.model_validate(payload)
     admission = admit_proposals(raw, sorted(unit.citable_block_ids()))
     result = ground_proposals(
         unit=unit,

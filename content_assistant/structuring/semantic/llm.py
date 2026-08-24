@@ -105,6 +105,25 @@ def build_service_config(
     return resolved
 
 
+class ModelCallFailed(RuntimeError):
+    """The provider returned nothing usable, and that is not an answer.
+
+    Marker's services return an empty dict once their retries are exhausted -
+    a 429, a timeout and an unparseable reply all end the same way. Validated
+    against a response schema, ``{}`` becomes a well-formed reply carrying no
+    items, which is indistinguishable from a model that read the lesson and
+    correctly concluded there was nothing to write.
+
+    That collapse was measured, not imagined: ten lessons in a row recorded
+    "0 objectives, validation ok" while every call behind them had failed on
+    quota. Saying a lesson holds nothing is a claim about the book, and a call
+    that never arrived may not make it.
+
+    It lives here, at the seam, because every stage that speaks to a provider
+    meets the same failure and must not paper over it in its own way.
+    """
+
+
 class LLMRequest(BaseModel):
     """One structured request. Images are paths, resolved by the adapter."""
 
