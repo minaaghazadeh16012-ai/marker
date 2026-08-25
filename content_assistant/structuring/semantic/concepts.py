@@ -20,7 +20,12 @@ from typing import Dict, List, Optional, Sequence, Tuple
 
 from pydantic import BaseModel, Field
 
-from content_assistant.models.content import Concept, Evidence, make_id
+from content_assistant.models.content import (
+    Concept,
+    Evidence,
+    Provenance,
+    make_id,
+)
 from content_assistant.structuring.evidence import EvidenceUnit
 from content_assistant.structuring.semantic.llm import (
     LLMRequest,
@@ -280,6 +285,17 @@ def ground_proposals(
     pages = block_page_index(unit)
     texts = unit.block_text()
     evidence_by_id: Dict[str, Evidence] = {}
+    # One record, shared by every concept this call produces: they all came
+    # from the same prompt and the same model, and a per-entity copy of the
+    # same four strings would say nothing extra. No timestamp - that belongs
+    # to the run, and stamping it here would make two identical runs produce
+    # artifacts that differ.
+    provenance = Provenance(
+        extraction_method="model_proposed",
+        stage="concepts",
+        model_id=model_id or None,
+        prompt_version=prompt_version or None,
+    )
 
     for proposal in admission.admitted:
         outcome = verify_claim(
@@ -346,6 +362,7 @@ def ground_proposals(
                 requires_human_review=needs_review,
                 review_reasons=reasons,
                 out_of_book_vocabulary=foreign_words,
+                provenance=provenance,
             )
         )
         result.confidence_breakdowns[concept_id] = breakdown

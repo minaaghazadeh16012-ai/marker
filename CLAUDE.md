@@ -60,7 +60,10 @@ There is no config file format — every tunable is an `Annotated` class attribu
 A second, independent package that sits **on top of** Marker and never modifies
 it. Marker is the extraction engine; `content_assistant` turns its output into a
 measured, traceable artifact - first L0/L1, then the concepts a lesson
-teaches and the objectives derived from them. See [content_assistant/README.md](content_assistant/README.md).
+teaches and the objectives derived from them, then a single loadable
+**Content Package** an adaptive learning engine consumes. See
+[content_assistant/README.md](content_assistant/README.md) and, for the schema
+itself, [content_assistant/CONTENT_SCHEMA.md](content_assistant/CONTENT_SCHEMA.md).
 
 ```bash
 python -m content_assistant.extraction.pipeline \
@@ -70,7 +73,10 @@ python -m content_assistant.extraction.pipeline \
 python -m content_assistant.structuring.semantic.run_concepts --l0 work-dir/l0_extraction.json --lesson 4 --out l1-dir --llm marker.services.gemini.GoogleGeminiService
 python -m content_assistant.structuring.semantic.run_objectives --unit l1-dir/lesson-04/evidence-unit.json --concepts l1-dir/lesson-04/concept-verified.json --out l2-dir --llm marker.services.gemini.GoogleGeminiService
 
-python -m unittest discover -s content_assistant/tests -t .   # 285 tests, no deps
+# assemble the per-lesson stage artifacts into one validated package
+python -m content_assistant.package.build --l0 work-dir/l0_extraction.json --concepts l1-dir --objectives l2-dir --out content/
+
+python -m unittest discover -s content_assistant/tests -t .   # 396 tests, no deps
 ```
 
 Omitting `--llm` puts either runner in dry-run: it builds and writes the exact
@@ -90,6 +96,28 @@ Key facts when working on it:
   conversion. The only in-process Marker import is `PdfProvider`, used to read
   the raw text layer before layout — done lazily so tests never load Marker.
 - **Every threshold lives in `ExtractionConfig`** ([content_assistant/models/extraction.py](content_assistant/models/extraction.py)) — never inline a new one.
+- **Three layers, bound by two different rules.** Content knowledge (`Concept`)
+  and learning intent (`LearningObjective`, `Skill`) inherit `Grounded` and
+  cannot exist without a citation. Learning experience (`LearningActivity`,
+  `Question` in [content_assistant/models/learning.py](content_assistant/models/learning.py))
+  inherits `Attributed` and carries **no evidence fields at all** — an activity
+  is designed material, not a claim about the book, so what holds it together
+  is linkage (`LINK001`/`LINK002`), not evidence. Do not add `evidence_ids` to
+  either.
+- **A question does not own pedagogical knowledge.** It names the objectives it
+  tests; the concepts it touches are reached *through* them
+  (`ContentSchema.concepts_for_question`) and are never stored on it. The same
+  reasoning keeps `prerequisite_concepts`, `grade` and `subject` off `Concept`
+  — each is already stored once elsewhere.
+- **Learner state is not part of the content schema.** Student, attempt,
+  mastery and learning events belong to the engine. The content layer answers
+  what *exists* (`activities_for_objective`, `prerequisites_of`), never what a
+  particular child should do next.
+- **A prerequisite must be quoted from the book or signed by a person.**
+  `EVID001` exempts `provenance.extraction_method == "human"` from needing
+  evidence — the only such exemption, unreachable by any pipeline stage — and
+  `LINK003` refuses a prerequisite that has neither. Use `human_relation()`;
+  never let a model author one.
 - Three page numbers are kept distinct on purpose: `pdf_page_index` (0-based,
   Marker's `page_id`), `pdf_page` (1-based), `printed_page` (on the paper, or
   `null`). `page_offset` is derived from footer evidence, never assumed.
@@ -113,5 +141,12 @@ Key facts when working on it:
   carrying no items. Both semantic stages check for the response field itself
   and raise `ModelCallFailed` ([structuring/semantic/llm.py](content_assistant/structuring/semantic/llm.py))
   rather than recording that a lesson has nothing in it.
+- **The schema is versioned and additive.** `SCHEMA_VERSION` lives once, in
+  [content_assistant/models/common.py](content_assistant/models/common.py), and
+  [content_assistant/package/migrate.py](content_assistant/package/migrate.py)
+  is the only code allowed to decide whether a stored version can be read — it
+  upgrades an older minor, and **refuses a newer one** rather than silently
+  dropping fields on the next save. Adding a field means an optional one with a
+  default plus a minor bump; anything else is a major bump.
 - Tests use stdlib `unittest` because pytest is not a runtime dependency here;
   `pytest.ini` limits `testpaths` to `tests`, so Marker's own suite is unaffected.

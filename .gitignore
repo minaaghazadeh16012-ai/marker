@@ -177,3 +177,9 @@ cython_debug/
 .idea/
 
 .vscode/
+
+# Content Packages built from a textbook. Derived artifacts, and they carry
+# verbatim quotations from a book that is not ours to redistribute - the same
+# reason the L2 run artifacts are not committed either. Rebuild with
+# `python -m content_assistant.package.build`.
+/content

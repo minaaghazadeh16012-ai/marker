@@ -38,6 +38,7 @@ from content_assistant.models.content import (
     Concept,
     Evidence,
     LearningObjective,
+    Provenance,
     make_id,
 )
 from content_assistant.models.objective import (
@@ -432,6 +433,14 @@ def ground_objective_proposals(
     texts = unit.block_text()
     lesson_texts = list(texts.values())
     evidence_by_id: Dict[str, Evidence] = {}
+    # Shared by every objective from this call, and deliberately carrying no
+    # timestamp - see the same note in the concept stage.
+    provenance = Provenance(
+        extraction_method="model_proposed",
+        stage="objectives",
+        model_id=model_id or None,
+        prompt_version=prompt_version or None,
+    )
 
     for proposal in admission.admitted:
         concept = by_concept[proposal.concept_id]
@@ -515,6 +524,7 @@ def ground_objective_proposals(
                 requires_human_review=needs_review,
                 review_reasons=reasons,
                 out_of_book_vocabulary=foreign_words,
+                provenance=provenance,
             )
         )
         result.confidence_breakdowns[objective_id] = breakdown

@@ -26,6 +26,7 @@ from pydantic import BaseModel, Field
 
 from content_assistant.models.content import (
     RELATION_TYPES,
+    REVIEW_DECIDED,
     ContentSchema,
     Lesson,
     Section,
@@ -341,6 +342,13 @@ class PagesCovered(Rule):
 
 
 def _grounded_entities(schema: ContentSchema):
+    """Everything that asserts something about the book, and so must cite it.
+
+    Activities and questions are absent by design: they are designed material
+    rather than claims, and holding them to an evidence rule would either be
+    ignored or satisfied with a decorative citation. What holds them together
+    is ``LINK001``/``LINK002`` instead.
+    """
     yield from (("concept", c) for c in schema.concepts)
     yield from (("objective", o) for o in schema.objectives)
     yield from (("skill", s) for s in schema.skills)
@@ -348,22 +356,55 @@ def _grounded_entities(schema: ContentSchema):
     yield from (("relation", r) for r in schema.relations)
 
 
+def _reviewable_entities(schema: ContentSchema):
+    """Everything a person can pass judgement on - both layers.
+
+    Wider than :func:`_grounded_entities`, because a reviewer signs off on an
+    activity or a question exactly as they do on a concept, even though only
+    one of the two has to quote the book.
+    """
+    yield from _grounded_entities(schema)
+    yield from (("activity", a) for a in schema.activities)
+    yield from (("question", q) for q in schema.questions)
+
+
 class EntityHasEvidence(Rule):
     code = "EVID001"
     stage = "semantic"
-    description = "Nothing enters the schema without evidence."
+    description = "Nothing enters the schema without evidence, or a person."
 
     def check(self, ctx):
+        """One exemption, and it costs a name.
+
+        A record whose provenance says ``human`` may stand without a quotation,
+        because a person is accountable for it and can be asked why. Nothing
+        else can: ``deterministic`` and ``model_proposed`` both still have to
+        cite the book, so no stage of this pipeline can reach the exemption -
+        it is only reachable by a person editing a package, through
+        :func:`~content_assistant.models.content.human_relation` or an
+        authoring tool.
+
+        The exemption exists because the one relation an adaptive engine most
+        needs - ``A is a prerequisite of B`` - is almost never printed in a
+        first-grade textbook, while being perfectly real. Without this, the
+        only way to record it would have been a decorative citation, which is
+        worse: it would look grounded. ``LINK003`` closes the other half, by
+        refusing a prerequisite that has neither evidence nor an author.
+        """
         if not ctx.schema_doc:
             return
         for kind, entity in _grounded_entities(ctx.schema_doc):
-            if not entity.evidence_ids:
-                yield self.finding(
-                    f"{kind} {entity.id} has no evidence and cannot be grounded "
-                    "in the book",
-                    entity_id=entity.id,
-                    entity_kind=kind,
-                )
+            if entity.evidence_ids:
+                continue
+            provenance = getattr(entity, "provenance", None)
+            if provenance and provenance.extraction_method == "human":
+                continue
+            yield self.finding(
+                f"{kind} {entity.id} has no evidence and cannot be grounded "
+                "in the book",
+                entity_id=entity.id,
+                entity_kind=kind,
+            )
 
 
 class EvidenceReferencesRealBlock(Rule):
@@ -913,6 +954,281 @@ class NoOrphanEntities(Rule):
                 )
 
 
+# ---------------------------------------------------------------------------
+# provenance rules
+#
+# "Every important claim must be traceable to its source" is only a slogan
+# until something refuses a claim that is not. These two are that refusal.
+# ---------------------------------------------------------------------------
+
+
+class ModelProposedEntityNamesItsModel(Rule):
+    code = "PROV001"
+    stage = "semantic"
+    description = "A model-proposed record must say which model, and which prompt."
+
+    def check(self, ctx):
+        """Only fires on a record that claims a model produced it.
+
+        A missing provenance block is silence, not a false claim - a 1.0.0
+        artifact has none, and reporting those as faults would flood the report
+        with the schema's own history. What cannot stand is a record that says
+        "a model wrote me" and then cannot say which one: that is exactly the
+        claim nobody can check later.
+        """
+        if not ctx.schema_doc:
+            return
+        for kind, entity in _grounded_entities(ctx.schema_doc):
+            provenance = getattr(entity, "provenance", None)
+            if provenance is None:
+                continue
+            if provenance.extraction_method != "model_proposed":
+                continue
+            missing = [
+                field
+                for field in ("model_id", "prompt_version")
+                if not getattr(provenance, field, None)
+            ]
+            if missing:
+                yield self.finding(
+                    f"{kind} {entity.id} says a model proposed it but records "
+                    f"no {', '.join(missing)}; the claim cannot be traced back "
+                    "to the run that made it",
+                    entity_id=entity.id,
+                    entity_kind=kind,
+                    details={"missing": missing},
+                )
+
+
+class ReviewDecisionIsAttributed(Rule):
+    code = "PROV002"
+    stage = "semantic"
+    description = "A review decision must name who made it and when."
+
+    def check(self, ctx):
+        """A verdict nobody signed is not a review.
+
+        ``pending`` is exempt because it is the absence of a decision rather
+        than one. Everything else is a person overriding, or confirming, what
+        the pipeline computed - and an unattributed override is the one edit in
+        the whole schema that cannot be argued with afterwards.
+        """
+        if not ctx.schema_doc:
+            return
+        for kind, entity in _reviewable_entities(ctx.schema_doc):
+            status = getattr(entity, "review_status", "pending")
+            if status not in REVIEW_DECIDED:
+                continue
+            missing = [
+                field
+                for field in ("reviewed_by", "reviewed_at")
+                if not getattr(entity, field, None)
+            ]
+            if missing:
+                yield self.finding(
+                    f"{kind} {entity.id} is marked {status!r} but records no "
+                    f"{', '.join(missing)}",
+                    entity_id=entity.id,
+                    entity_kind=kind,
+                    details={"missing": missing, "review_status": status},
+                )
+
+
+# ---------------------------------------------------------------------------
+# linkage rules
+#
+# The content-knowledge layers are held together by evidence; the
+# learning-experience layer is held together by these. An activity is not a
+# claim about the book and cannot be asked to quote one, so what it *can* be
+# asked is that it serves something real and that everything it names exists.
+# ---------------------------------------------------------------------------
+
+#: ``(kind, id-list attribute, what the target must be)``. Kept as data so
+#: adding an entity type is a row rather than another loop.
+_REFERENCE_FIELDS: Sequence[tuple] = (
+    ("objective", "concept_ids", "concept"),
+    ("skill", "concept_ids", "concept"),
+    ("skill", "objective_ids", "objective"),
+    ("skill", "lesson_ids", "lesson"),
+    ("activity", "objective_ids", "objective"),
+    ("activity", "question_ids", "question"),
+    ("question", "objective_ids", "objective"),
+)
+
+
+class ReferencesResolve(Rule):
+    code = "LINK001"
+    stage = "final"
+    description = "Every reference between content entities must point at one."
+
+    def check(self, ctx):
+        if not ctx.schema_doc:
+            return
+        schema = ctx.schema_doc
+        kinds = schema.entity_ids()
+        groups = {
+            "objective": schema.objectives,
+            "skill": schema.skills,
+            "activity": schema.activities,
+            "question": schema.questions,
+        }
+        for kind, attribute, expected in _REFERENCE_FIELDS:
+            for entity in groups[kind]:
+                for target in getattr(entity, attribute, []) or []:
+                    found = kinds.get(target)
+                    if found is None:
+                        yield self.finding(
+                            f"{kind} {entity.id} references {target!r} in "
+                            f"{attribute}, which does not exist",
+                            entity_id=entity.id,
+                            entity_kind=kind,
+                        )
+                    elif found != expected:
+                        yield self.finding(
+                            f"{kind} {entity.id} lists {target!r} as a "
+                            f"{expected} in {attribute}, but it is a {found}",
+                            entity_id=entity.id,
+                            entity_kind=kind,
+                        )
+        # ``skill_id`` is a single value rather than a list, so it does not fit
+        # the table above; the check it needs is the same one.
+        for objective in schema.objectives:
+            if objective.skill_id and kinds.get(objective.skill_id) != "skill":
+                yield self.finding(
+                    f"objective {objective.id} names skill "
+                    f"{objective.skill_id!r}, which is not a skill in this "
+                    "package",
+                    entity_id=objective.id,
+                    entity_kind="objective",
+                )
+
+
+class ExperienceServesSomething(Rule):
+    code = "LINK002"
+    stage = "final"
+    description = "An activity and a question must each serve an objective."
+
+    def check(self, ctx):
+        """The learning-experience layer's whole integrity rule.
+
+        A question measuring no objective yields a score that means nothing -
+        there is no statement of the form "the student can now ..." that
+        getting it right would support. An activity serving no objective is
+        material with no place in any path through the book. Neither is a
+        quality problem to be scored down; both are unusable, so both are
+        errors.
+        """
+        if not ctx.schema_doc:
+            return
+        for question in ctx.schema_doc.questions:
+            if not question.objective_ids:
+                yield self.finding(
+                    f"question {question.id} tests no objective; a score on it "
+                    "measures nothing anyone can name",
+                    entity_id=question.id,
+                    entity_kind="question",
+                )
+        for activity in ctx.schema_doc.activities:
+            if not activity.objective_ids:
+                yield self.finding(
+                    f"activity {activity.id} serves no objective; nothing "
+                    "would ever schedule it",
+                    entity_id=activity.id,
+                    entity_kind="activity",
+                )
+
+
+class PrerequisiteIsAccountable(Rule):
+    code = "LINK003"
+    stage = "final"
+    description = "A prerequisite must be quoted from the book or signed by a person."
+
+    def check(self, ctx):
+        """The one edge an adaptive engine trusts most, held to the most.
+
+        When a student fails, the scheduler walks ``prerequisite_of`` backwards
+        and sends them somewhere else. A guessed edge therefore does not
+        produce a slightly worse recommendation, it sends a child to the wrong
+        lesson - so a guess is not allowed to look like the other two.
+
+        Either the book says so, in a verified quotation, or a named person
+        does. ``EVID001`` lets a human-authored record stand without evidence;
+        this makes sure that is the *only* way one stands.
+        """
+        if not ctx.schema_doc:
+            return
+        evidence = ctx.schema_doc.evidence_by_id()
+        for relation in ctx.schema_doc.relations:
+            if relation.relation_type != "prerequisite_of":
+                continue
+            verified = any(
+                evidence[e].quote_verified
+                for e in relation.evidence_ids
+                if e in evidence
+            )
+            if verified:
+                continue
+            provenance = relation.provenance
+            authored = (
+                provenance is not None
+                and provenance.extraction_method == "human"
+                and bool(provenance.authored_by)
+            )
+            if authored:
+                continue
+            yield self.finding(
+                f"prerequisite {relation.source_id} -> {relation.target_id} "
+                "has neither a verified quotation nor a named author; a "
+                "guessed prerequisite sends a student to the wrong lesson",
+                entity_id=relation.id,
+                entity_kind="relation",
+            )
+
+
+class SkillIsMoreThanOneObjective(Rule):
+    code = "LINK004"
+    stage = "final"
+    severity = "warning"
+    description = "A skill must generalise; one that does not is its objective."
+
+    def check(self, ctx):
+        """What separates a skill from the objective it was copied from.
+
+        A skill is the ability that carries across objectives. Grouping one
+        objective and repeating its sentence does not describe anything the
+        objective did not, and it doubles the vocabulary a dashboard has to
+        show. Reported rather than refused: a single-objective skill can be a
+        legitimate first entry in a group that is still being filled in.
+        """
+        if not ctx.schema_doc:
+            return
+        from content_assistant.models.content import id_slug
+
+        statements = {
+            objective.id: id_slug(objective.statement)
+            for objective in ctx.schema_doc.objectives
+        }
+        for skill in ctx.schema_doc.skills:
+            if not skill.objective_ids:
+                yield self.finding(
+                    f"skill {skill.id} groups no objective; there is nothing a "
+                    "student could do that would show they have it",
+                    entity_id=skill.id,
+                    entity_kind="skill",
+                )
+                continue
+            if len(skill.objective_ids) > 1:
+                continue
+            only = skill.objective_ids[0]
+            if statements.get(only) == id_slug(skill.label):
+                yield self.finding(
+                    f"skill {skill.id} restates objective {only} and "
+                    "generalises nothing",
+                    entity_id=skill.id,
+                    entity_kind="skill",
+                )
+
+
 #: Order matters only for readability of the report.
 ALL_RULES: Sequence[Rule] = (
     BookIdentityDeclared(),
@@ -946,4 +1262,10 @@ ALL_RULES: Sequence[Rule] = (
     RelationsAreWellFormed(),
     PrerequisiteGraphIsAcyclic(),
     NoOrphanEntities(),
+    ModelProposedEntityNamesItsModel(),
+    ReviewDecisionIsAttributed(),
+    ReferencesResolve(),
+    ExperienceServesSomething(),
+    PrerequisiteIsAccountable(),
+    SkillIsMoreThanOneObjective(),
 )
