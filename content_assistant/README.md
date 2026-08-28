@@ -281,7 +281,7 @@ Standard-library `unittest` — no pytest, no network, no PDF, no Marker run:
 python -m unittest discover -s content_assistant/tests -t .
 ```
 
-538 tests, all deterministic: no model, no network, no PDF, no Marker process.
+540 tests, all deterministic: no model, no network, no PDF, no Marker process.
 
 ## L1 — deterministic structuring
 
@@ -348,8 +348,9 @@ A model is shown one Evidence Unit and asked what the lesson teaches. What
 comes back is admitted only if it cites blocks that exist in that unit, and
 grounded only if its quotations are found in the blocks it attributed them to.
 
-Measured over the whole book: **73 concepts across 14 lessons, 90 citations,
-100% of quotations verified.**
+Measured over the science book: **73 concepts across 14 lessons, 90
+citations, 100% of quotations verified.** Per-book figures for the rest of
+grade 1 are in [L2_QUALITY_REPORT.md](L2_QUALITY_REPORT.md).
 
 ### Objectives
 
@@ -367,9 +368,11 @@ its way around:
 - **An objective's confidence is capped at its concept's.** A claim about an
   idea cannot be better evidenced than the idea.
 
-Measured over the whole book: **79 objectives from 73 concepts, 82 of 82
+Measured over the science book: **79 objectives from 73 concepts, 82 of 82
 quotations verified by exact match, zero objectives citing outside their
-concept, zero rejected, zero ungrounded.**
+concept, zero rejected, zero ungrounded.** (The assembled package holds 99
+evidence records — the union of the two stages' tables, since 9 of the
+objective stage's 82 citations were not already cited by a concept.)
 
 Six objectives were flagged for wording. Read back against their lessons,
 five are the two known false-positive classes described below; the sixth,
@@ -462,7 +465,7 @@ drop fields from.
 
 [CONTENT_SCHEMA.md](CONTENT_SCHEMA.md) is the reference: the three layers and
 what binds each, the entity map, identity, provenance, the review lifecycle,
-all 45 validation rules, versioning, and what an adaptive engine may and may
+all 46 validation rules, versioning, and what an adaptive engine may and may
 not ask of the content layer.
 
 ## Human authoring

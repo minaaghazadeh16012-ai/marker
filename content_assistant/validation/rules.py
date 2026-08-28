@@ -339,6 +339,41 @@ class PagesCovered(Rule):
             )
 
 
+class LessonTextLandsInASection(Rule):
+    code = "STRUCT012"
+    description = "A block in a lesson but in no section is invisible, not mislabelled."
+
+    def check(self, ctx):
+        """The hole that deletes evidence without deleting anything.
+
+        A section is the only thing the semantic stages read. A block assigned
+        to a lesson but to no section is therefore not *mislabelled* - it is
+        removed from the material a model is ever shown, while every count in
+        the lesson still includes it. Measured on four grade-1 books before the
+        leading ``page_fallback`` section existed, that was between 6% and 30%
+        of a book's lesson text, and nothing anywhere reported it.
+
+        An error rather than a warning: the run that follows is not slightly
+        worse, it is answering a different question from the one it appears to.
+        """
+        if not ctx.lessons or not ctx.sections:
+            return
+        in_sections: Set[str] = set()
+        for section in ctx.sections:
+            in_sections.update(section.block_ids)
+        for lesson in ctx.lessons:
+            orphaned = [b for b in lesson.block_ids if b not in in_sections]
+            if not orphaned:
+                continue
+            yield self.finding(
+                f"lesson {lesson.lesson_number} has {len(orphaned)} block(s) "
+                "in no section; the semantic stages would never see them",
+                entity_id=lesson.id,
+                entity_kind="lesson",
+                details={"blocks": orphaned[:20], "count": len(orphaned)},
+            )
+
+
 class BookYieldedLessons(Rule):
     code = "STRUCT011"
     severity = "warning"
@@ -1556,6 +1591,7 @@ ALL_RULES: Sequence[Rule] = (
     LessonHasContent(),
     PagesCovered(),
     BookYieldedLessons(),
+    LessonTextLandsInASection(),
     EntityHasEvidence(),
     EvidenceReferencesRealBlock(),
     EvidenceIdsResolve(),

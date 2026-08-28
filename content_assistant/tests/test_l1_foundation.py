@@ -765,6 +765,38 @@ def evidence(eid="e1", block="/page/0/Text/0", verified=True, page_no=1, printed
     )
 
 
+class SectionCoverageTests(unittest.TestCase):
+    def test_a_lesson_block_in_no_section_is_an_error(self):
+        """The hole that deletes evidence without deleting anything.
+
+        A section is the only thing the semantic stages read, so a block in a
+        lesson and in no section is not mislabelled - it is removed from what a
+        model is ever shown, while every count in the lesson still includes it.
+        """
+        extraction = two_lesson_book()
+        lessons, sections = segment(extraction)
+        # Take one block away from every section, leaving it in its lesson.
+        stripped = [
+            section.model_copy(update={"block_ids": section.block_ids[1:]})
+            for section in sections
+        ]
+        ctx = ValidationContext(
+            extraction=extraction, lessons=lessons, sections=stripped
+        )
+        report = run_validation(ctx, stages=["structure"])
+        self.assertIn("STRUCT012", report.by_code())
+
+    def test_a_book_whose_sections_cover_every_lesson_block_is_silent(self):
+        extraction = two_lesson_book()
+        lessons, sections = segment(extraction)
+        ctx = ValidationContext(
+            extraction=extraction, lessons=lessons, sections=sections
+        )
+        report = run_validation(ctx, stages=["structure"])
+        self.assertNotIn("STRUCT012", report.by_code())
+
+
+
 class EmptyBookTests(unittest.TestCase):
     def test_a_book_that_yielded_no_lessons_says_so(self):
         """The empty result that looks exactly like a successful one.

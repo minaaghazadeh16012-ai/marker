@@ -213,7 +213,7 @@ spelled twice, and `LINK004` says so.
 ## Validation
 
 Independent of every generator, and grouped by the stage at which each check
-becomes possible. **45 rules.**
+becomes possible. **46 rules.**
 
 > A rule proved only by the code that implements it is not proved.
 
@@ -234,6 +234,7 @@ property from the assembled document by an unrelated route.
 | `STRUCT009` | structure | warning | A lesson with no text at all cannot be structured. |
 | `STRUCT010` | structure | warning | Report pages that belong to no lesson. |
 | `STRUCT011` | structure | warning | A book with pages but no lessons produced nothing. |
+| `STRUCT012` | structure | error | A block in a lesson but in no section is invisible, not mislabelled. |
 | `EVID001` | semantic | error | Nothing enters the schema without evidence, or a person. |
 | `EVID002` | semantic | error | Evidence must point at a block that exists. |
 | `EVID003` | semantic | error | An entity's evidence ids must exist in the evidence table. |
@@ -280,6 +281,14 @@ every *other* rule reads as healthy.
 it to object to. That is the problem: a book whose contents page was never
 found and a book that was never run produce identical clean reports. The rule
 makes the emptiness say so.
+
+`STRUCT012` — a section is the only thing the semantic stages read, so a block
+assigned to a lesson but to no section is not *mislabelled*, it is removed from
+the material a model is ever shown while every count in the lesson still
+includes it. Measured on four grade-1 books before the leading `page_fallback`
+section existed, that was between 6% and 30% of a book's lesson text, and
+nothing reported it. An error, not a warning: the run that follows is not
+slightly worse, it is answering a different question from the one it appears to.
 
 `LINK006` — an activity serves an objective and its question measures one, so
 both halves pass every linkage check. Nothing else compares the two, and a
@@ -527,7 +536,7 @@ document:
 | `models/learning.py` | `LearningActivity`, `Question`, `QuestionOption`, `GradingSpec` |
 | `models/objective.py` | the closed performance-verb lexicon, versioned apart |
 | `models/extraction.py` | the L0 artifact, and every extraction threshold |
-| `validation/rules.py` | all 45 rules |
+| `validation/rules.py` | all 46 rules |
 | `validation/engine.py` | runs them; owns no checks of its own |
 | `package/schema.py` | `ContentPackage`, `load_content`, `save_content` |
 | `package/build.py` | assembles a package from run artifacts |

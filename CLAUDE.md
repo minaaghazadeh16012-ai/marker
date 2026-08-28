@@ -79,7 +79,7 @@ python -m content_assistant.structuring.semantic.run_book --l0 work-dir/l0_extra
 # assemble the per-lesson stage artifacts into one validated package
 python -m content_assistant.package.build --l0 work-dir/l0_extraction.json --concepts l1-dir --objectives l2-dir --authored content/grade-1/science --out content/
 
-python -m unittest discover -s content_assistant/tests -t .   # 538 tests, no deps
+python -m unittest discover -s content_assistant/tests -t .   # 540 tests, no deps
 ```
 
 Omitting `--llm` puts any runner in dry-run: it builds and writes the exact
