@@ -85,6 +85,38 @@ class ExtractionConfig(BaseModel):
         "least this many big-number anchors.",
     )
 
+    # -- plain (typeset) contents page ---------------------------------------
+    plain_toc_min_unit_rows: int = Field(
+        5,
+        description="A typeset page is a table of contents when at least this "
+        "many of its rows name both a unit and a page inside the book.",
+    )
+    plain_toc_unit_word_max_chars: int = Field(
+        8,
+        description="How far into a contents row the unit's index may sit. "
+        "Beyond this the numeral is part of the title, not an index.",
+    )
+    plain_toc_column_body_width_max: float = Field(
+        0.60,
+        description="A contents row wider than this fraction of the page's "
+        "text extent spans the columns and cannot help locate one.",
+    )
+    plain_toc_column_gap_min: float = Field(
+        0.02,
+        description="Two columns are separated by a whitespace corridor at "
+        "least this fraction of the page's text extent wide.",
+    )
+    plain_toc_distinct_page_ratio: float = Field(
+        0.90,
+        description="A contents list points at a different page each time; at "
+        "least this fraction of the page numbers found must be distinct.",
+    )
+    plain_toc_reach_fraction: float = Field(
+        0.40,
+        description="A contents list reaches the far end of the book: its "
+        "highest page must be at least this fraction of the page count.",
+    )
+
     # -- noise filtering -----------------------------------------------------
     min_line_height: float = Field(
         2.0,
@@ -195,12 +227,25 @@ class BookIdentity(BaseModel):
     edition: Optional[str] = None
 
 
+#: How the book printed its own contents list, and therefore how far its rows
+#: can be trusted verbatim. A *decorative* spread sets each title along a curve,
+#: one glyph per span, and comes back with words split or re-ordered - readable
+#: enough to locate a lesson, not to name it. A *plain* typeset table is
+#: ordinary text and its rows are exactly what the book prints.
+#:
+#: The distinction is not cosmetic: it decides which of two sources names a
+#: lesson - see :func:`~content_assistant.structuring.segmentation
+#: .resolve_lesson_title`. ``None`` means the artifact predates the field.
+TocSource = Literal["decorative", "plain"]
+
+
 class DocumentInfo(BaseModel):
     source: str
     source_sha256: str
     page_count: int
     #: Explicit book identity; empty on artifacts produced before v0.2.
     book: BookIdentity = Field(default_factory=BookIdentity)
+    toc_source: Optional[TocSource] = None
     page_offset: Optional[int] = None
     page_offset_evidence: PageOffsetEvidence = Field(
         default_factory=PageOffsetEvidence

@@ -537,7 +537,14 @@ class ContentSchema(BaseModel):
         return {item.id: item for item in self.evidence}
 
     def entity_ids(self) -> Dict[str, str]:
-        """Every entity id mapped to its kind, for reference checking."""
+        """Every id a reference may point *at*, mapped to its kind.
+
+        Relations are absent on purpose, and it is not an oversight: this is
+        what ``FINAL001`` checks a relation's own endpoints against, and a
+        relation whose target is another relation states nothing anyone can
+        act on. :meth:`all_ids` is the wider map, for a registry that has to be
+        able to find any record at all.
+        """
         out: Dict[str, str] = {}
         for lesson in self.lessons:
             out[lesson.id] = "lesson"
@@ -555,6 +562,21 @@ class ContentSchema(BaseModel):
             out[activity.id] = "activity"
         for question in self.questions:
             out[question.id] = "question"
+        return out
+
+    def all_ids(self) -> Dict[str, str]:
+        """Every record in the package, relations and evidence included.
+
+        What a lookup index is built from. Wider than :meth:`entity_ids`
+        because "find me this id" and "may a relation point here?" are
+        different questions, and answering both from one map would have to
+        settle for the wrong answer to one of them.
+        """
+        out = self.entity_ids()
+        for relation in self.relations:
+            out[relation.id] = "relation"
+        for item in self.evidence:
+            out[item.id] = "evidence"
         return out
 
     # -- traversal -------------------------------------------------------
@@ -616,6 +638,73 @@ class ContentSchema(BaseModel):
                     wanted.append(concept_id)
         by_concept = {c.id: c for c in self.concepts}
         return [by_concept[c] for c in wanted if c in by_concept]
+
+    def objectives_for_question(
+        self, question_id: str
+    ) -> List[LearningObjective]:
+        """What this item claims to measure.
+
+        The first hop of ``question -> objective -> concept``, offered on its
+        own because a scheduler that has just marked an attempt needs the
+        objectives and not the concepts behind them.
+        """
+        question = self.by_id(question_id)
+        if not isinstance(question, Question):
+            return []
+        wanted = set(question.objective_ids)
+        return [o for o in self.objectives if o.id in wanted]
+
+    def objectives_for_activity(
+        self, activity_id: str
+    ) -> List[LearningObjective]:
+        activity = self.by_id(activity_id)
+        if not isinstance(activity, LearningActivity):
+            return []
+        wanted = set(activity.objective_ids)
+        return [o for o in self.objectives if o.id in wanted]
+
+    def skills_for_objective(self, objective_id: str) -> List[Skill]:
+        """The transferable abilities this objective exercises.
+
+        Read off :attr:`Skill.objective_ids`, which is the side that owns the
+        grouping: a skill is *defined* by the objectives it generalises, while
+        :attr:`LearningObjective.skill_id` is a convenience pointer back that an
+        author may or may not have filled in. ``LINK005`` refuses the two to
+        disagree; this method never has to choose between them.
+        """
+        return [s for s in self.skills if objective_id in s.objective_ids]
+
+    def activity_for_question(self, question_id: str) -> Optional[
+        LearningActivity
+    ]:
+        """The activity that asks this question, if one does.
+
+        Derived rather than stored. An activity owns an *ordered* list of the
+        questions it asks, and that order is a fact only the activity can hold;
+        a back-pointer on the question would restate the membership half of it
+        and be free to disagree.
+        """
+        for activity in self.activities:
+            if question_id in activity.question_ids:
+                return activity
+        return None
+
+    def sections_for_lesson(self, lesson_id: str) -> List[Section]:
+        return sorted(
+            (s for s in self.sections if s.lesson_id == lesson_id),
+            key=lambda s: s.order,
+        )
+
+    def evidence_for(self, entity_id: str) -> List[Evidence]:
+        """The quotations behind a claim, resolved.
+
+        ``concept -> evidence`` in one call, for a reviewer or an interface
+        that has to show why a claim is in the book.
+        """
+        entity = self.by_id(entity_id)
+        wanted = list(getattr(entity, "evidence_ids", []) or [])
+        by_id = self.evidence_by_id()
+        return [by_id[e] for e in wanted if e in by_id]
 
     def concepts_for_activity(self, activity_id: str) -> List[Concept]:
         activity = self.by_id(activity_id)

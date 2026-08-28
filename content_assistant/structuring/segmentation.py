@@ -126,8 +126,8 @@ def opening_page_title(
 ) -> Tuple[Optional[str], Optional[TitleSource]]:
     """Read a lesson's title off its first page.
 
-    Two shapes occur, and both are handled by looking at how much text the page
-    carries rather than by assuming a layout:
+    Two shapes occur, and both are handled by looking at what the page printed
+    rather than by assuming a layout:
 
     * a **bare opener** - a title, a decorative numeral, nothing else. Once the
       numerals are dropped what remains is the title, verbatim.
@@ -135,8 +135,15 @@ def opening_page_title(
       the title is the page's first printed heading, and the body text below is
       not part of it.
 
+    What a title is never made of is *several blocks joined together*. A
+    workbook opens a lesson with four short instructions - ``سلام!``,
+    ``کامل کن.``, ``رنگ بزن.`` - and running them into one string produces a
+    sentence the book does not print anywhere, offered as the lesson's name.
+    Short is not the test; being a single printed thing is. So a page with more
+    than one block of its own has to state a heading, or it states no title.
+
     Returns ``(title, source)``, or ``(None, None)`` when the page states no
-    title and the contents spread has to be trusted instead.
+    title and the contents list has to be trusted instead.
     """
     blocks = [
         b
@@ -147,11 +154,15 @@ def opening_page_title(
     if not meaningful:
         return None, None
 
-    joined = " ".join(b.text.strip() for b in meaningful).strip()
-    if len(joined) <= config.opening_page_max_chars:
-        match = _OPENING_TITLE_RE.match(joined)
-        candidate = (match.group(1) if match else joined).strip()
-        return (candidate or None), ("lesson_opening_page" if candidate else None)
+    if len(meaningful) == 1:
+        only = meaningful[0].text.strip()
+        if len(only) <= config.opening_page_max_chars:
+            match = _OPENING_TITLE_RE.match(only)
+            candidate = (match.group(1) if match else only).strip()
+            return (
+                (candidate or None),
+                ("lesson_opening_page" if candidate else None),
+            )
 
     heading = next((b for b in meaningful if b.type == "SectionHeader"), None)
     if heading:
@@ -164,20 +175,43 @@ def resolve_lesson_title(
     opening: Optional[str],
     config: SegmentationConfig,
     opening_source: TitleSource = "lesson_opening_page",
+    toc_is_verbatim: bool = False,
 ) -> Tuple[str, TitleSource, bool, Dict[str, str]]:
     """Pick the lesson title from two independent sources.
 
-    The contents spread gives every lesson, but its lettering is set along a
-    curve and words can come back split. The opening page gives one clean line
-    but only for lessons that have such a page. Where both exist the opening
-    page wins - it is verbatim - and the contents version is kept alongside so a
-    reviewer can see what was set aside.
+    The rule is *prefer whichever source printed the title verbatim*, and which
+    one that is depends on how the book set its contents list.
+
+    A **decorative** contents spread sets each title along a curve, one glyph
+    per span, and words come back split or re-ordered - exact enough to locate
+    a lesson, not to name it. There the opening page wins.
+
+    A **typeset** contents table is ordinary text, and its row is the book's own
+    name for the lesson, chosen by the book rather than assembled from whatever
+    the first page happened to print. There the contents wins - and it matters,
+    because a lesson's first page is often a part divider or a worksheet whose
+    only heading names a section rather than the lesson.
+
+    ``toc_is_verbatim`` carries that distinction from
+    :attr:`DocumentInfo.toc_source`. It defaults to ``False`` so an artifact
+    written before the field existed is read exactly as it was then.
+
+    Whichever loses is kept in ``title_alternatives``, so a reviewer sees the
+    disagreement rather than only its outcome.
     """
     alternatives: Dict[str, str] = {}
     if toc_entry.title:
         alternatives["toc"] = toc_entry.title
     if opening:
         alternatives[opening_source] = opening
+
+    if toc_is_verbatim and toc_entry.title:
+        return (
+            toc_entry.title,
+            "toc",
+            toc_entry.title_is_approximate,
+            alternatives,
+        )
 
     if opening:
         agrees = (
@@ -259,6 +293,28 @@ def lesson_page_bounds(
     return bounds
 
 
+def _lesson_number(printed: Optional[int], taken: Sequence[int] | set) -> int:
+    """The number that identifies this lesson inside its book.
+
+    The book's own printed index is used whenever it can serve as an
+    identifier, which is what a book with one kind of unit gives you: a
+    contents list of fourteen lessons numbered one to fourteen.
+
+    Books with more than one kind of unit restart counting at each kind -
+    ``نگاره‌ی ۱`` and ``درس اوّل`` are both "1", and a free lesson prints no
+    number at all - so the printed index cannot identify anything on its own.
+    Reusing it would give two lessons the same id and silently merge them.
+    Where that happens the lesson takes the lowest number still free, which is
+    its position in the book; the printed index stays visible in the title.
+    """
+    number = printed if printed is not None and printed not in taken else None
+    if number is None:
+        number = 1
+        while number in taken:
+            number += 1
+    return number
+
+
 def segment_lessons(
     result: ExtractionResult, config: Optional[SegmentationConfig] = None
 ) -> List[Lesson]:
@@ -269,7 +325,13 @@ def segment_lessons(
         page_key(page): page for page in result.pages
     }
 
+    # A document-level fact, read once: every lesson in one book is named from
+    # the same contents list, so asking per lesson would be asking the same
+    # question fourteen times.
+    toc_is_verbatim = result.document.toc_source == "plain"
+
     lessons: List[Lesson] = []
+    taken: set[int] = set()
     for entry, start, end in lesson_page_bounds(
         result.toc, result.document.page_count
     ):
@@ -278,9 +340,14 @@ def segment_lessons(
             continue
         opening, opening_source = opening_page_title(pages[0], config)
         title, source, approximate, alternatives = resolve_lesson_title(
-            entry, opening, config, opening_source or "lesson_opening_page"
+            entry,
+            opening,
+            config,
+            opening_source or "lesson_opening_page",
+            toc_is_verbatim=toc_is_verbatim,
         )
-        number = entry.lesson_number or (len(lessons) + 1)
+        number = _lesson_number(entry.lesson_number, taken)
+        taken.add(number)
         lessons.append(
             Lesson(
                 id=ordinal_id(book_id, "lesson", number),
@@ -364,16 +431,49 @@ def segment_sections(
     return sections
 
 
+def _has_content_before(
+    pages: Sequence[Page],
+    first_start: Tuple[int, float, Page, Optional[Block]],
+) -> bool:
+    """True when the lesson prints something above its first heading."""
+    boundary = (first_start[0], first_start[1])
+    for page in pages:
+        for block in page.blocks:
+            if (page.pdf_page, block.bbox[1]) < boundary:
+                return True
+        for asset in page.assets:
+            if (page.pdf_page, asset.bbox[1]) < boundary:
+                return True
+    return False
+
+
 def _sections_from_headers(
     book_id: str,
     lesson: Lesson,
     pages: Sequence[Page],
     headers: Sequence[Tuple[Page, Block]],
 ) -> List[Section]:
-    """One section per heading, running until the next heading starts."""
-    starts = [
+    """One section per heading, running until the next heading starts.
+
+    A lesson normally starts before its first heading does: the opening page
+    carries the title, the picture and often the whole first activity, and the
+    first printed heading arrives pages later. That material belongs to the
+    lesson and to no printed section, and a section is the only thing later
+    stages read - so leaving it out does not merely mislabel it, it deletes it
+    from the evidence a model is given. Measured on four grade-1 books it is
+    between 6% and 30% of a book's lesson text.
+
+    So the run above the first heading becomes a section of its own. The book
+    never said where it starts, which is exactly what ``page_fallback`` records
+    everywhere else, and it is named after the lesson because the lesson's name
+    is the only name printed for it.
+    """
+    starts: List[Tuple[int, float, Page, Optional[Block]]] = [
         (page.pdf_page, block.bbox[1], page, block) for page, block in headers
     ]
+    if starts and _has_content_before(pages, starts[0]):
+        starts.insert(0, (pages[0].pdf_page, float("-inf"), pages[0], None))
+
     sections: List[Section] = []
     for order, (pdf_page, top, page, header) in enumerate(starts, start=1):
         if order < len(starts):
@@ -410,9 +510,11 @@ def _sections_from_headers(
                 id=ordinal_id(book_id, "section", lesson.lesson_number, order),
                 lesson_id=lesson.id,
                 order=order,
-                title=header.text.strip(),
-                boundary_method="section_header",
-                source_block_id=header.block_id,
+                title=lesson.title if header is None else header.text.strip(),
+                boundary_method=(
+                    "page_fallback" if header is None else "section_header"
+                ),
+                source_block_id=None if header is None else header.block_id,
                 page_range=_section_page_range(member_pages or [page]),
                 block_ids=block_ids,
                 asset_ids=asset_ids,

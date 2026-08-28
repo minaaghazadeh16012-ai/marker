@@ -73,15 +73,20 @@ python -m content_assistant.extraction.pipeline \
 python -m content_assistant.structuring.semantic.run_concepts --l0 work-dir/l0_extraction.json --lesson 4 --out l1-dir --llm marker.services.gemini.GoogleGeminiService
 python -m content_assistant.structuring.semantic.run_objectives --unit l1-dir/lesson-04/evidence-unit.json --concepts l1-dir/lesson-04/concept-verified.json --out l2-dir --llm marker.services.gemini.GoogleGeminiService
 
-# assemble the per-lesson stage artifacts into one validated package
-python -m content_assistant.package.build --l0 work-dir/l0_extraction.json --concepts l1-dir --objectives l2-dir --out content/
+# both stages over a whole book - resumable, and the way to actually run one
+python -m content_assistant.structuring.semantic.run_book --l0 work-dir/l0_extraction.json --concepts l1-dir --objectives l2-dir --llm marker.services.gemini.GoogleGeminiService
 
-python -m unittest discover -s content_assistant/tests -t .   # 396 tests, no deps
+# assemble the per-lesson stage artifacts into one validated package
+python -m content_assistant.package.build --l0 work-dir/l0_extraction.json --concepts l1-dir --objectives l2-dir --authored content/grade-1/science --out content/
+
+python -m unittest discover -s content_assistant/tests -t .   # 538 tests, no deps
 ```
 
-Omitting `--llm` puts either runner in dry-run: it builds and writes the exact
+Omitting `--llm` puts any runner in dry-run: it builds and writes the exact
 prompt and stops, without calling a model. Credentials are read from Marker's
-`local.env`, never passed on the command line.
+`local.env`, never passed on the command line - an OS environment variable
+overrides that file, which is how a run picks a different key or model
+(`GEMINI_MODEL_NAME`) without touching code.
 
 Key facts when working on it:
 
@@ -121,6 +126,25 @@ Key facts when working on it:
 - Three page numbers are kept distinct on purpose: `pdf_page_index` (0-based,
   Marker's `page_id`), `pdf_page` (1-based), `printed_page` (on the paper, or
   `null`). `page_offset` is derived from footer evidence, never assumed.
+- **Lesson boundaries come from the book's own contents page, in one of two
+  shapes.** The science book prints a *decorative* spread (curved, one glyph
+  per span) read by `reconstruct_decorative_toc`; the farsi, negaresh and quran
+  books print an ordinary typeset table read by
+  [extraction/contents.py](content_assistant/extraction/contents.py). A row is
+  a boundary only if it ends in a page inside the book *and* names itself a
+  unit; the unit word is learned from the page, never hard-coded per book. The
+  decorative result always wins where both exist, so the frozen science output
+  is unchanged. A book that prints no contents page at all - grade-1 riazi -
+  yields no lessons, and that is the correct answer, not a bug to paper over.
+- **A lesson number must identify a lesson within its book.** A book with more
+  than one kind of unit restarts its printed counting (`نگاره‌ی ۱` and
+  `درس اوّل` are both "1"), so `segment_lessons` keeps the printed index only
+  while it is still free and otherwise numbers by position. Reusing it would
+  give two lessons the same id.
+- **Everything in a lesson must land in a section.** A section is the only
+  thing the semantic stages read, so a block outside one is not mislabelled -
+  it is invisible to the model. Material above a lesson's first printed heading
+  becomes a leading `page_fallback` section for exactly that reason.
 - The semantic layer runs in stages, each consuming the previous one's
   artifacts: concepts ([structuring/semantic/concepts.py](content_assistant/structuring/semantic/concepts.py))
   then objectives ([structuring/semantic/objectives.py](content_assistant/structuring/semantic/objectives.py)).
@@ -148,5 +172,40 @@ Key facts when working on it:
   upgrades an older minor, and **refuses a newer one** rather than silently
   dropping fields on the next save. Adding a field means an optional one with a
   default plus a minor bump; anything else is a major bump.
+- **Human authoring is the only door for what the book does not state.**
+  Skills, prerequisites, activities and questions are not printed in a
+  first-grade textbook, and a model asked for them answers fluently with no way
+  to tell a real ordering from a plausible one. `content_assistant/authoring/`
+  is where they enter: every constructor requires `authored_by`, stamps
+  `extraction_method="human"`, and refuses records nothing downstream could use
+  (an activity serving no objective, a choice among one thing, an auto-marked
+  item with no answer key). Nothing a model drives imports that module, and a
+  test asserts it. Authored records live in one `authored-content.json` per
+  book - the one *source* in a tree of derived artifacts, so `save_authored`
+  will not overwrite without being told.
+- **A question records the response form, not the renderer.** `question_type`
+  is a closed vocabulary of sixteen forms a scheduler and a grader reason over;
+  `template_id` is free text naming the UI template, because the template list
+  belongs to the interface and grows without this schema. Who marks an item is
+  a decision (`grading.mode`) with a per-form default, never a property of the
+  form alone - and `hybrid` answers `auto_gradable = False`, because a form a
+  machine can *partly* mark still needs a person before a score means anything.
+- **Which of two sources names a lesson depends on how the book set its
+  contents.** `DocumentInfo.toc_source` records `decorative` or `plain`. A
+  decorative spread is set along a curve and comes back with words split, so
+  the opening page wins there; a typeset table is verbatim and is the book's own
+  name for the lesson, so it wins - which matters because a lesson's first page
+  is often a part divider whose only heading names a section. A title is also
+  never assembled from several blocks: joining a workbook's four short
+  instructions produces a sentence the book prints nowhere.
+- **An empty result must say so.** `STRUCT011` reports a book with pages but no
+  lessons, because every other rule is silent on an empty package - a book
+  whose contents page was never found and a book that was never run otherwise
+  produce identical clean reports.
+- **An artifact must name the model, not the adapter.** `MarkerServiceClient`
+  records `<import path>@<concrete model>`; a service class is stable while the
+  model behind it is not. Semantic calls also override Marker's 30-second
+  default (`SEMANTIC_TIMEOUT_SECONDS`), which is sized for repairing one block,
+  not for reading a whole lesson.
 - Tests use stdlib `unittest` because pytest is not a runtime dependency here;
   `pytest.ini` limits `testpaths` to `tests`, so Marker's own suite is unaffected.

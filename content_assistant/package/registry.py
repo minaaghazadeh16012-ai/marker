@@ -24,9 +24,13 @@ from pathlib import Path
 from typing import Dict, Iterable, Iterator, List, Optional, Tuple
 
 from content_assistant.models.content import (
+    BookRef,
     Concept,
+    Evidence,
     Lesson,
     LearningObjective,
+    Relation,
+    Section,
     Skill,
 )
 from content_assistant.models.learning import LearningActivity, Question
@@ -84,7 +88,7 @@ class ContentRegistry:
                 f"package {package.package_id!r} is already registered; two "
                 "files claim the same grade, subject and book"
             )
-        for entity_id, kind in package.content.entity_ids().items():
+        for entity_id, kind in package.content.all_ids().items():
             owner = self._index.get(entity_id)
             if owner is not None and owner[0] != package.package_id:
                 raise ValueError(
@@ -159,9 +163,53 @@ class ContentRegistry:
         return self._packages.get(found[0]) if found else None
 
     def get(self, entity_id: str):
-        """Any entity in any loaded package, or ``None``."""
+        """Any record in any loaded package, or ``None``."""
         package = self.package_of(entity_id)
         return package.content.by_id(entity_id) if package else None
+
+    def _typed(self, entity_id: str, expected: type):
+        """``get`` that refuses to hand back the wrong kind of thing.
+
+        The failure this exists to prevent is quiet: an id that turns out to be
+        a concept where an objective was expected reads perfectly well - it has
+        an ``id``, it has a ``label`` - and the caller only finds out several
+        traversals later, if at all. Answering ``None`` makes the mistake
+        surface where it was made.
+        """
+        found = self.get(entity_id)
+        return found if isinstance(found, expected) else None
+
+    def get_book(self, package_id: str) -> Optional[BookRef]:
+        """The book a package holds - grade, subject, page count, checksum."""
+        package = self._packages.get(package_id)
+        return package.content.book if package else None
+
+    def get_lesson(self, entity_id: str) -> Optional[Lesson]:
+        return self._typed(entity_id, Lesson)
+
+    def get_section(self, entity_id: str) -> Optional[Section]:
+        return self._typed(entity_id, Section)
+
+    def get_concept(self, entity_id: str) -> Optional[Concept]:
+        return self._typed(entity_id, Concept)
+
+    def get_objective(self, entity_id: str) -> Optional[LearningObjective]:
+        return self._typed(entity_id, LearningObjective)
+
+    def get_skill(self, entity_id: str) -> Optional[Skill]:
+        return self._typed(entity_id, Skill)
+
+    def get_activity(self, entity_id: str) -> Optional[LearningActivity]:
+        return self._typed(entity_id, LearningActivity)
+
+    def get_question(self, entity_id: str) -> Optional[Question]:
+        return self._typed(entity_id, Question)
+
+    def get_relation(self, entity_id: str) -> Optional[Relation]:
+        return self._typed(entity_id, Relation)
+
+    def get_evidence(self, entity_id: str) -> Optional[Evidence]:
+        return self._typed(entity_id, Evidence)
 
     # -- traversal -------------------------------------------------------
     #
@@ -216,6 +264,36 @@ class ContentRegistry:
         if package is None:
             return []
         return package.content.concepts_for_question(question_id)
+
+    def objectives_for_question(
+        self, question_id: str
+    ) -> List[LearningObjective]:
+        package = self.package_of(question_id)
+        if package is None:
+            return []
+        return package.content.objectives_for_question(question_id)
+
+    def skills_for_objective(self, objective_id: str) -> List[Skill]:
+        package = self.package_of(objective_id)
+        if package is None:
+            return []
+        return package.content.skills_for_objective(objective_id)
+
+    def sections_for_lesson(self, lesson_id: str) -> List[Section]:
+        package = self.package_of(lesson_id)
+        if package is None:
+            return []
+        return package.content.sections_for_lesson(lesson_id)
+
+    def evidence_for(self, entity_id: str) -> List[Evidence]:
+        """The quotations behind a claim - the end of every ``why?`` chain."""
+        package = self.package_of(entity_id)
+        if package is None:
+            return []
+        return package.content.evidence_for(entity_id)
+
+    def relations(self, grade: Optional[int] = None) -> List[Relation]:
+        return list(self._collect("relations", grade))
 
     def prerequisites_of(self, entity_id: str) -> List[str]:
         package = self.package_of(entity_id)

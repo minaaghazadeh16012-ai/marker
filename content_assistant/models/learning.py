@@ -52,7 +52,7 @@ from content_assistant.models.common import (
 )
 
 #: Bumped with the content schema it belongs to.
-LEARNING_SCHEMA_VERSION = "1.1.0"
+LEARNING_SCHEMA_VERSION = "1.2.0"
 
 #: What a student is doing. Closed, because an open list stops being a
 #: vocabulary: a scheduler choosing "something else to try" has to be able to
@@ -92,18 +92,31 @@ ACTIVITY_TYPES = (
     "review",
 )
 
-#: The forms a question can take. Grade one is mostly the first five; the last
-#: three exist because a first-grade science book asks a child to draw, to say
-#: something out loud, and to do something with their hands, and a schema that
+#: The **response form** a question takes - what the student does to answer,
+#: not what it is rendered with. The distinction is the whole reason this list
+#: is closed and short while the renderer's template list is open and long: a
+#: template is a way of drawing a question and new ones arrive whenever the UI
+#: grows, whereas a response form is what a scheduler and a grader reason over.
+#: ``template_id`` on :class:`Question` is the seam between the two.
+#:
+#: The last four exist because a first-grade book asks a child to draw, to
+#: colour, to write by hand and to say something out loud, and a schema that
 #: could not express those would push real assessment out of the system.
 QuestionType = Literal[
     "multiple_choice",
     "true_false",
     "fill_blank",
+    "short_answer",
+    "long_answer",
     "matching",
     "ordering",
-    "short_answer",
+    "grouping",
+    "table_fill",
+    "column_arithmetic",
+    "text_selection",
     "drawing",
+    "coloring",
+    "handwriting",
     "spoken",
     "physical_task",
 ]
@@ -112,20 +125,90 @@ QUESTION_TYPES = (
     "multiple_choice",
     "true_false",
     "fill_blank",
+    "short_answer",
+    "long_answer",
     "matching",
     "ordering",
-    "short_answer",
+    "grouping",
+    "table_fill",
+    "column_arithmetic",
+    "text_selection",
     "drawing",
+    "coloring",
+    "handwriting",
     "spoken",
     "physical_task",
 )
 
-#: Question forms a machine can mark on its own. The rest need a person or a
-#: separate grader, and an engine has to know which it is holding before it
-#: promises a student instant feedback.
+#: Who can mark an answer. ``hybrid`` is not a hedge: it is the form whose
+#: shape a machine can check while its content still needs a person - a
+#: handwriting task where the letter is recognisable but the stroke order is
+#: not, a spoken answer matched against a word list.
+GradingMode = Literal["auto", "manual", "hybrid"]
+
+#: What each response form can be marked by when nobody has said otherwise.
+#: A default, never a verdict: an author who knows this particular item cannot
+#: be machine-marked says so on the item, and :attr:`Question.grading` wins.
+#:
+#: ``fill_blank`` and ``short_answer`` are ``auto`` here because a one-word
+#: answer in a first-grade book is checked against an answer key, not judged.
+#: ``long_answer`` and the two picture forms are not, because there is nothing
+#: to check them against that would not be invented.
+DEFAULT_GRADING_MODE = {
+    "multiple_choice": "auto",
+    "true_false": "auto",
+    "fill_blank": "auto",
+    "short_answer": "auto",
+    "long_answer": "manual",
+    "matching": "auto",
+    "ordering": "auto",
+    "grouping": "auto",
+    "table_fill": "auto",
+    "column_arithmetic": "auto",
+    "text_selection": "auto",
+    "drawing": "manual",
+    "coloring": "manual",
+    "handwriting": "hybrid",
+    "spoken": "hybrid",
+    "physical_task": "manual",
+}
+
+#: Question forms a machine can mark on its own, absent an explicit decision.
+#: Derived from the table above rather than written twice, so the two can never
+#: disagree about a form.
 AUTO_GRADABLE_TYPES = frozenset(
-    {"multiple_choice", "true_false", "matching", "ordering"}
+    form for form, mode in DEFAULT_GRADING_MODE.items() if mode == "auto"
 )
+
+
+class GradingSpec(BaseModel):
+    """How this particular item is marked, when the form's default is wrong.
+
+    Two facts an engine needs before it can promise a child instant feedback,
+    and neither is derivable from the response form alone. *Who marks it* -
+    because an author can know that this short answer is open-ended even though
+    short answers usually are not. *What counts as right* - because Persian is
+    written more than one way and an answer key that accepts exactly one
+    spelling marks a correct child wrong.
+
+    ``accepted_answers`` does not duplicate :attr:`Question.answer`: the
+    question holds the answer that will be *shown*, this holds the other
+    spellings that also *count*. One is what a student is told; the other is
+    what a marker tolerates.
+    """
+
+    mode: GradingMode
+    #: Whether a partly-right answer earns part of the credit. Off by default:
+    #: a scheduler reading "0.5" has to know what half of this item means, and
+    #: for most first-grade forms nothing does.
+    partial_credit: bool = False
+    #: Other spellings of the right answer that a marker must accept.
+    accepted_answers: List[str] = Field(default_factory=list)
+    #: Apply the pipeline's own Persian normalization before comparing. On by
+    #: default, because the alternative is failing a child over an Arabic yeh.
+    normalize_answer: bool = True
+    #: What this item is worth relative to its siblings.
+    points: float = 1.0
 
 
 class QuestionOption(BaseModel):
@@ -164,13 +247,64 @@ class Question(Attributed):
     hints: List[str] = Field(default_factory=list)
     #: Why the right answer is right. Shown after the attempt, not before.
     explanation: str = ""
+    #: How this item is marked, when the form's default is not right for it.
+    #: ``None`` means "whatever this form usually implies" - see
+    #: :data:`DEFAULT_GRADING_MODE` - which is the honest reading of an item
+    #: nobody has made a decision about.
+    grading: Optional[GradingSpec] = None
+    #: Which renderer draws it, when the content layer knows. Free text and
+    #: deliberately so: the template list belongs to the UI, it grows without
+    #: the content schema, and a closed copy here would have to be edited every
+    #: time a template is added. Left empty, a consumer picks a template from
+    #: :attr:`question_type`.
+    template_id: Optional[str] = None
     difficulty: Optional[DifficultyBand] = None
     content_types: List[ContentType] = Field(default_factory=list)
 
     @property
+    def grading_mode(self) -> str:
+        """Who marks this item: what the author said, or what the form implies.
+
+        A form this version does not know answers ``"manual"`` rather than
+        raising. Two reasons, and the second is the important one. A record
+        can hold an unknown form - a package written by newer code, a value
+        that got past pydantic - and the safe reading of "I do not know what
+        this is" is never "a machine can mark it". And ``QUEST001`` is the rule
+        that reports such a value; a property that raised here would take the
+        whole validation report down with it, losing that finding and every
+        other one alongside it.
+        """
+        if self.grading is not None:
+            return self.grading.mode
+        return DEFAULT_GRADING_MODE.get(self.question_type, "manual")
+
+    @property
     def auto_gradable(self) -> bool:
-        """Can a machine mark this without a person looking at it?"""
-        return self.question_type in AUTO_GRADABLE_TYPES
+        """Can a machine mark this without a person looking at it?
+
+        ``hybrid`` answers ``False``. A form a machine can *partly* mark still
+        needs a person before a score means anything, and an engine that read
+        "partly" as "yes" would show a child a mark nobody had checked.
+        """
+        return self.grading_mode == "auto"
+
+    def answer_key(self) -> List[str]:
+        """Everything that counts as a right answer, in one list.
+
+        The shown answer first, then the tolerated spellings. Empty for the
+        forms whose correctness lives in :attr:`options` instead.
+        """
+        keys = [self.answer] if self.answer else []
+        if self.grading:
+            keys += [
+                text
+                for text in self.grading.accepted_answers
+                if text and text not in keys
+            ]
+        return keys
+
+    def correct_options(self) -> List[QuestionOption]:
+        return [option for option in self.options if option.is_correct]
 
     @staticmethod
     def build_id(book_id: str, question_type: str, prompt: str) -> str:
@@ -201,6 +335,12 @@ class LearningActivity(Attributed):
     difficulty: Optional[DifficultyBand] = None
     content_types: List[ContentType] = Field(default_factory=list)
     estimated_minutes: Optional[int] = None
+    #: Where this activity sits among the ones serving the same objective, when
+    #: the order matters - explain it, then practise it, then play with it.
+    #: ``None`` means the author made no claim about order, which is different
+    #: from claiming it comes first; a scheduler must not read a missing order
+    #: as position zero.
+    order: Optional[int] = None
 
     # The concepts, prerequisites and skills behind this activity are all
     # reached through its objectives and are deliberately not stored here. See

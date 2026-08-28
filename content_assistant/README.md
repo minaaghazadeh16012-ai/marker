@@ -161,6 +161,44 @@ split across rows, a space can land inside it. Entries carry
 any particular book is hard-coded — lesson count, titles, and pages all come
 out of the PDF's own text layer.
 
+## Plain contents pages
+
+Not every book prints its contents that way. The grade-1 farsi, negaresh and
+quran books print an ordinary typeset table: one row to a line, body-size
+numerals, no display number anywhere to anchor on, and — in two of the three —
+two columns side by side. The information is the same and every decorative
+signal is absent, so `extraction/contents.py` reads that shape instead.
+
+A row becomes a lesson boundary only if it proves two things the page prints:
+
+1. it **ends in a page number** inside the book, and
+2. it **names itself a unit** — `درس <ordinal>`, `نگاره‌ی <n>`, or a bare
+   leading index. `با هم بخوانیم )دریا( 87` is part of a lesson, not a lesson.
+
+The unit *word* is not hard-coded per book: the reader learns which words the
+book puts in front of an index, then accepts that book's other rows using the
+same word (`درس آزاد`, `درس آخر`) without inventing a number for them. Matching
+runs on a compacted form (`text/persian.py:compact`) because the PDFs break
+words apart — `اوّ ل`, `بیست و یکم`, `سی‌ام` all have to be recognised.
+
+Two shapes had to be handled before any of this works:
+
+- **Columns.** Two rows at the same height in different columns are two rows.
+  Merging them yields `درس آزاد … 103 درس چهارم … 37` and puts a lesson on the
+  wrong page. Columns are found as whitespace corridors no ordinary row
+  crosses; a heading that spans the page is excluded from that test rather than
+  allowed to weld the columns together.
+- **Wrapped titles.** A title too long for its line leaves its page number on
+  the continuation row. Such a row takes the page from the next row down in its
+  own column, or the lesson before it silently swallows its pages.
+
+A page is only read this way when at least `plain_toc_min_unit_rows` rows name
+both a unit and a page, the pages named are nearly all different, and they
+reach at least `plain_toc_reach_fraction` of the way into the book. Measured
+over five grade-1 books this fires on exactly one page per book and on no page
+of the science book, whose contents spread stays with the decorative reader —
+the decorative result always wins where both exist.
+
 ## Persian normalization limits
 
 `text/persian.py` is deterministic and conservative. Its rule is **do not
@@ -213,6 +251,28 @@ Outputs, all under `--out` (keep it outside the repository):
 Extraction is cached on the source checksum and flag set, so re-running only
 repeats the cheap stages.
 
+The semantic stages run per lesson, which is the right unit to think in and the
+wrong one to work in — a thirty-three lesson book is sixty-six commands. The
+whole-book runner drives both:
+
+```bash
+python -m content_assistant.structuring.semantic.run_book \
+    --l0 work/l0_extraction.json \
+    --concepts work/l1 --objectives work/l2 \
+    --llm marker.services.gemini.GoogleGeminiService
+```
+
+It **resumes**: a lesson with a verified artifact is skipped, not re-paid for,
+so re-running after a quota reset or a dropped connection continues where it
+stopped. It writes **nothing** for a lesson whose call failed — that absence is
+what makes the next run pick it up again, and an empty artifact would be a
+claim that the lesson holds nothing, which no failed call earns. And it stops
+after a few failures in a row, because one lesson failing is a lesson and
+several is the provider.
+
+Omit `--llm` for a dry run over the whole book: every prompt written, nothing
+called.
+
 ### Tests
 
 Standard-library `unittest` — no pytest, no network, no PDF, no Marker run:
@@ -221,7 +281,7 @@ Standard-library `unittest` — no pytest, no network, no PDF, no Marker run:
 python -m unittest discover -s content_assistant/tests -t .
 ```
 
-396 tests, all deterministic: no model, no network, no PDF, no Marker process.
+538 tests, all deterministic: no model, no network, no PDF, no Marker process.
 
 ## L1 — deterministic structuring
 
@@ -231,6 +291,11 @@ and sections:
 
 - **Lesson boundaries** come from the contents spread: a lesson runs from its
   printed page to the page before the next one starts.
+- **Lesson numbers** are the book's printed index wherever that index can
+  identify a lesson on its own. A book with more than one kind of unit restarts
+  counting at each kind — `نگاره‌ی ۱` and `درس اوّل` are both "1" — so there the
+  lesson takes the lowest number still free, which is its position in the book.
+  The printed index stays visible in the title.
 - **Lesson titles** are settled between two independent sources. The contents
   page lists every lesson but sets its lettering along a curve, so words come
   back split; a lesson's opening page states the title verbatim but only some
@@ -240,6 +305,13 @@ and sections:
 - **Sections** come from the book's own printed headings. A lesson that prints
   none falls back to one section per page and records that in
   `boundary_method`, so a fallback is never mistaken for a real heading.
+- **A lesson starts before its first heading does.** The opening page carries
+  the title, the picture and often the whole first activity, and the first
+  printed heading arrives pages later. That run becomes a section of its own,
+  marked `page_fallback` because the book never drew that boundary. It is not
+  cosmetic: a section is the only thing later stages read, so material outside
+  one is not mislabelled, it is deleted from the evidence the model sees.
+  Measured on four grade-1 books it was 6%–30% of a book's lesson text.
 - **`material_profile`** measures what a lesson actually offers — characters,
   blocks, images, headings — and classifies its text density. This is what
   later decides whether a lesson can be read from its text at all.
@@ -352,6 +424,7 @@ python -m content_assistant.package.build \
     --l0 work/l0_extraction.json \
     --concepts work/l1 \
     --objectives work/l2 \
+    --authored content/grade-1/science \
     --out content/
 ```
 
@@ -371,7 +444,16 @@ registry.grades()                              # [1]
 registry.questions_for_objective(objective_id) # what would show it was met
 registry.remediation_for_objective(objective_id)
 registry.prerequisites_of(concept_id)
+registry.skills_for_objective(objective_id)
+registry.evidence_for(concept_id)              # why it is in the book
+
+registry.get_objective(some_id)                # None if it is not an objective
 ```
+
+Every kind has a typed getter. A typed getter answers `None` for the wrong kind
+rather than handing it back: an id that is a concept where an objective was
+expected reads perfectly well — it has an `id`, it has a `label` — and the
+caller finds out several traversals later, if at all.
 
 Loading is deterministic and refuses two things quietly getting past: a
 package whose stored counts disagree with its content (edited outside the
@@ -380,27 +462,74 @@ drop fields from.
 
 [CONTENT_SCHEMA.md](CONTENT_SCHEMA.md) is the reference: the three layers and
 what binds each, the entity map, identity, provenance, the review lifecycle,
-all 37 validation rules, versioning, and what an adaptive engine may and may
+all 45 validation rules, versioning, and what an adaptive engine may and may
 not ask of the content layer.
+
+## Human authoring
+
+Four things an adaptive engine needs are not printed in a first-grade textbook:
+which objectives add up to one transferable **skill**, which concept must come
+**before** which, what a child should **do** to practise, and what would
+**show** they can. The book teaches all of it and states none of it, and a
+model asked to supply the missing half supplies it fluently — with no way to
+tell a real ordering from a plausible one.
+
+`content_assistant/authoring/` is the only door, and it is narrow:
+
+```python
+from content_assistant.authoring import author_question, question_option
+
+item = author_question(
+    book_id="g1-olom",
+    question_type="multiple_choice",
+    prompt="کدام یک را آهنربا جذب می‌کند؟",
+    objective_ids=[objective.id],
+    options=[
+        question_option("میخ", is_correct=True),
+        question_option("چوب", feedback="چوب فلز نیست؛ به جدول نگاه کن."),
+    ],
+    authored_by="م. آقازاده",
+)
+```
+
+Every constructor requires `authored_by`, stamps `extraction_method="human"`,
+derives a stable id, and **refuses** what nothing downstream could use: an
+activity serving no objective, a choice among one thing, an item promising
+automatic marking with nothing to mark against. Those refusals are runtime
+failures moved to authoring time — the last one otherwise lands the moment a
+child says they are done.
+
+Records live in one file per book, `authored-content.json`, beside the package
+it feeds. It is the one **source** in a tree of derived artifacts: nothing
+regenerates it, so `save_authored` refuses to overwrite unless told to. Build
+it in with `--authored`.
+
+Nothing a model drives imports this module, and a test asserts it.
 
 ## Not built yet
 
 Deliberately absent, and stated plainly because a README claiming otherwise is
 worse than no README:
 
-- **No generator for activities or questions.** The types, the linkage rules
-  (`LINK001`–`LINK004`) and the traversals exist and are tested; nothing fills
-  them. Every package this pipeline produces has `activities: []` and
-  `questions: []`, which is the truthful record of that.
-- **No skill, relation or misconception in any package.** `skill_from_objectives`
-  and `human_relation` are the sanctioned constructors and are tested; nothing
-  has run them, and nothing model-driven may.
+- **Nothing generates an activity, a question, a skill or a prerequisite.** The
+  types, the linkage rules (`LINK001`–`LINK007`, `QUEST001`–`QUEST003`), the
+  traversals and the authoring API all exist and are tested. The judgement that
+  fills them is a person's, and none has been authored yet — so every package
+  this pipeline produces has `skills: []`, `relations: []`, `activities: []`
+  and `questions: []`. That emptiness is the truthful record of work not yet
+  done, not a gap to be filled by a model.
+- **No misconception in any package.** Modelled and guarded (`PEDA004`);
+  nothing extracts them.
 - Content Index and Knowledge Graph as separate artifacts — the graph is
   currently the `Relation` table plus the traversals on `ContentSchema`.
 - Any use of the page images beyond storing them and flagging which lessons
   need them.
 - Any grade but the first. The schema is ready for grades 2–6; no data for
   them exists and none is invented.
+- **Lessons for grade-1 riazi.** That book prints no contents list of any kind
+  — no decorative spread, no typeset table, nothing naming a unit and a page —
+  so no lesson boundary exists to be read. Its package is honestly empty and
+  `STRUCT011` says so out loud, rather than letting it pass as processed.
 
 ## When OCR will be needed
 

@@ -26,6 +26,7 @@ from pathlib import Path
 from typing import Dict, List, Optional, Sequence, Tuple
 
 from content_assistant.extraction import marker_backend as mb
+from content_assistant.extraction.contents import reconstruct_plain_toc
 from content_assistant.extraction.page_diagnostics import compute_diagnostics
 from content_assistant.extraction.recovery import (
     polygon_from_bbox,
@@ -223,6 +224,10 @@ def run_pipeline(
 
     pages: List[Page] = []
     toc: List[TocEntry] = []
+    #: Contents rows read off an ordinary typeset page. Kept apart from ``toc``
+    #: and used only when the book prints no decorative contents spread, so a
+    #: book that has one is read exactly as it was before this path existed.
+    plain_toc: List[TocEntry] = []
     #: Heading state at the end of the previous page, so a page that opens with
     #: rescued text before any rendered block still knows where it sits.
     carried_hierarchy: Optional[Dict[str, str]] = None
@@ -315,6 +320,15 @@ def run_pipeline(
                     config=config,
                 )
             )
+        else:
+            plain_toc.extend(
+                reconstruct_plain_toc(
+                    pdf_page=index + 1,
+                    raw_lines=raw_lines,
+                    page_count=len(run.pages),
+                    config=config,
+                )
+            )
 
         last_hierarchy = [
             b.section_hierarchy for b in marker_page.blocks if b.section_hierarchy
@@ -343,7 +357,20 @@ def run_pipeline(
         page_offset=offset,
         page_offset_evidence=offset_evidence,
     )
-    return ExtractionResult(document=document, pages=pages, toc=toc)
+    # The decorative result always wins where both exist, so a book that
+    # prints a curved spread is read exactly as it was before the plain path
+    # existed. Which of the two won is recorded rather than inferred later:
+    # by the time a caller holds the rows, nothing about them says how they
+    # were read, and the two are trusted differently.
+    entries = toc or plain_toc
+    document = document.model_copy(
+        update={
+            "toc_source": (
+                "decorative" if toc else ("plain" if plain_toc else None)
+            )
+        }
+    )
+    return ExtractionResult(document=document, pages=pages, toc=entries)
 
 
 # ---------------------------------------------------------------------------

@@ -40,7 +40,36 @@ ENV_CONFIG_KEYS: Mapping[str, Sequence[str]] = {
     "openrouter_api_key": ("OPENROUTER_API_KEY",),
     "ollama_base_url": ("OLLAMA_BASE_URL", "OLLAMA_HOST"),
     "vertex_project_id": ("VERTEX_PROJECT_ID",),
+    # Not a credential - which model, within a provider. It sits in the same
+    # table because it has the same shape of problem: the operator chooses it,
+    # the pipeline must not name it, and a command-line flag for it would put
+    # a run's identity somewhere no artifact records.
+    "gemini_model_name": ("GEMINI_MODEL_NAME",),
+    "claude_model_name": ("CLAUDE_MODEL_NAME",),
+    "openai_model": ("OPENAI_MODEL",),
 }
+
+#: Where each provider keeps the name of the concrete model it will call.
+#:
+#: Needed because a service class is not a model. Two runs six months apart
+#: against ``marker.services.gemini.GoogleGeminiService`` can reach two
+#: different models, and an artifact recording only the import path cannot say
+#: which - which is exactly the question ``PROV001`` exists to keep answerable.
+MODEL_NAME_ATTRS: Sequence[str] = (
+    "gemini_model_name",
+    "claude_model_name",
+    "openai_model",
+    "deployment_name",
+)
+
+
+def concrete_model_name(service: Any) -> Optional[str]:
+    """The model a built service will actually call, if it names one."""
+    for attr in MODEL_NAME_ATTRS:
+        value = getattr(service, attr, None)
+        if value:
+            return str(value)
+    return None
 
 #: Settings fields on Marker's own ``settings`` object worth consulting. This
 #: is what makes ``local.env`` work: Marker reads that file into its settings,
@@ -124,6 +153,21 @@ class ModelCallFailed(RuntimeError):
     """
 
 
+#: How long a semantic call may take, in seconds.
+#:
+#: Marker's services default to 30, which is right for what they were built
+#: for - repairing one block, one table, one equation. A semantic stage sends a
+#: whole lesson and asks for structured output over all of it, and the densest
+#: lessons in a first-grade book do not come back inside 30 seconds. Measured:
+#: two of ten quran lessons failed on "deadline expired" at the default, and
+#: both succeeded unchanged with room to think.
+#:
+#: The cost of setting it too high is waiting; the cost of setting it too low
+#: is a lesson that looks like it has nothing in it. Those are not comparable,
+#: which is why this is generous rather than tight.
+SEMANTIC_TIMEOUT_SECONDS = 240
+
+
 class LLMRequest(BaseModel):
     """One structured request. Images are paths, resolved by the adapter."""
 
@@ -131,7 +175,7 @@ class LLMRequest(BaseModel):
     response_schema: Any
     image_paths: List[str] = Field(default_factory=list)
     max_retries: int = 2
-    timeout: Optional[int] = None
+    timeout: Optional[int] = SEMANTIC_TIMEOUT_SECONDS
 
 
 class LLMClient(Protocol):
@@ -186,8 +230,14 @@ class MarkerServiceClient:
 
         service_cls = strings_to_classes([import_path])[0]
         service_config = build_service_config(service_cls, config)
+        service = service_cls(service_config)
+        # The import path says which adapter; the model name says what actually
+        # answered. An artifact needs both, and only the second one changes
+        # when a provider retires a model underneath a stable class name.
+        model = concrete_model_name(service)
         return MarkerServiceClient(
-            service_cls(service_config), model_id=import_path
+            service,
+            model_id=f"{import_path}@{model}" if model else import_path,
         )
 
     def complete(self, request: LLMRequest) -> BaseModel:

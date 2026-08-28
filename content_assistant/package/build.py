@@ -18,11 +18,20 @@ names no model, and ``PROV001`` reports it.
         --l0 <work>/l0_extraction.json \\
         --concepts <work>/l1 \\
         --objectives <work>/l2 \\
+        --authored content/grade-1/science \\
         --out content/
 
 Both stage directories are the ones the runners wrote, holding ``lesson-NN``
 subdirectories. Either may be omitted: a package with concepts and no
 objectives is a truthful record of a book only half processed.
+
+``--authored`` is the one input that is not a stage artifact. Skills,
+prerequisites, activities and questions are not printed in the book and no
+stage proposes them; they are written by a person through
+:mod:`content_assistant.authoring` and carried in here unchanged, exactly like
+everything else. Omitted, or pointed at a file that does not exist yet, the
+package holds empty lists - which is the truthful record of authoring not yet
+done, and the reason this builder has no way to fill them in itself.
 """
 
 from __future__ import annotations
@@ -34,6 +43,7 @@ from datetime import datetime, timezone
 from pathlib import Path
 from typing import Dict, List, Optional, Sequence, Tuple
 
+from content_assistant.authoring.store import AuthoredContent, load_authored
 from content_assistant.models.content import (
     BookRef,
     Concept,
@@ -151,6 +161,7 @@ def build_package(
     concepts: Sequence[Concept] = (),
     objectives: Sequence[LearningObjective] = (),
     evidence: Sequence[Evidence] = (),
+    authored: Optional[AuthoredContent] = None,
     built_at: Optional[str] = None,
 ) -> ContentPackage:
     """Assemble one book's package from its parts.
@@ -173,6 +184,16 @@ def build_package(
             "Re-run the extraction with the book identity given."
         )
 
+    if authored is not None and authored.book_id and (
+        authored.book_id != book.book_id
+    ):
+        raise BuildError(
+            f"authored content belongs to {authored.book_id!r} but the "
+            f"extraction is {book.book_id!r}; every authored id was derived "
+            "from the other book and would resolve to nothing"
+        )
+    authored = authored or AuthoredContent(book_id=book.book_id)
+
     lessons, sections = segment(extraction)
     content = ContentSchema(
         book=BookRef(
@@ -190,6 +211,10 @@ def build_package(
         sections=sections,
         concepts=list(concepts),
         objectives=list(objectives),
+        skills=list(authored.skills),
+        relations=list(authored.relations),
+        activities=list(authored.activities),
+        questions=list(authored.questions),
         evidence=list(evidence),
         provenance=GenerationProvenance(
             extractor_version=extraction.document.extractor_version,
@@ -271,6 +296,12 @@ def main(argv: Optional[Sequence[str]] = None) -> int:
         help="directory of lesson-NN/ objective runs",
     )
     parser.add_argument(
+        "--authored",
+        default=None,
+        help="authored-content.json, or the directory holding it; skills, "
+        "prerequisites, activities and questions a person wrote",
+    )
+    parser.add_argument(
         "--out",
         required=True,
         help="content root; the package is written to "
@@ -298,11 +329,19 @@ def main(argv: Optional[Sequence[str]] = None) -> int:
             Path(args.objectives)
         )
 
+    book_id = extraction.document.book.book_id or ""
+    authored = (
+        load_authored(Path(args.authored), book_id)
+        if args.authored
+        else AuthoredContent(book_id=book_id)
+    )
+
     package = build_package(
         extraction=extraction,
         concepts=concepts,
         objectives=objectives,
         evidence=merge_evidence(concept_evidence, objective_evidence),
+        authored=authored,
         built_at=datetime.now(timezone.utc).isoformat(timespec="seconds"),
     )
     report = validate_package(package, extraction)
@@ -324,6 +363,7 @@ def main(argv: Optional[Sequence[str]] = None) -> int:
         "package_id": package.package_id,
         "content_schema_version": package.content_schema_version,
         "stats": package.stats.model_dump(),
+        "authored": authored.counts(),
         "validation": report.summary(),
     }
 

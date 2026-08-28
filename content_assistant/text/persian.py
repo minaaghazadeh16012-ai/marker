@@ -208,3 +208,94 @@ def digits_to_int(text: str) -> int | None:
         else:
             return None
     return int(out) if out else None
+
+
+def compact(text: str) -> str:
+    """Strip a word down to the letters and digits a reader actually sees.
+
+    Whitespace, ZWNJ, diacritics, tatweel and punctuation all come off. This
+    exists because the PDFs print the same word in several shapes - ``اوّ ل``
+    with a shadda and a stray space, ``سی‌ام`` with a ZWNJ, ``بیست و یکم`` with
+    two spaces - and a contents row has to be recognised in every one of them.
+    Nothing is reordered and no letter is substituted beyond the safe folds
+    :func:`normalize_characters` already makes.
+
+    This is a *matching* form, never a display form, which is why digits come
+    out as ASCII here while :func:`normalize_digits` keeps them Persian: a
+    caller comparing forms should not have to know which numeral set the
+    typesetter reached for.
+    """
+    folded = normalize_characters(text)
+    out = []
+    for ch in folded:
+        digit = _PERSIAN_DIGITS.get(ch) or _ARABIC_DIGITS.get(ch)
+        if digit is not None:
+            out.append(digit)
+            continue
+        category = unicodedata.category(ch)
+        if category.startswith("N") or (
+            category.startswith("L") and category != "Lm"
+        ):
+            out.append(ch)
+    return "".join(out)
+
+# ---------------------------------------------------------------------------
+# ordinals
+# ---------------------------------------------------------------------------
+
+#: Units and tens as they are spelled in a Persian ordinal. Compounds are built
+#: from these rather than listed, so ``بیست و یکم`` costs no extra entry.
+_ORDINAL_UNITS = {
+    "یکم": 1,
+    "اول": 1,
+    "اولین": 1,
+    "دوم": 2,
+    "سوم": 3,
+    "چهارم": 4,
+    "پنجم": 5,
+    "ششم": 6,
+    "هفتم": 7,
+    "هشتم": 8,
+    "نهم": 9,
+    "دهم": 10,
+    "یازدهم": 11,
+    "دوازدهم": 12,
+    "سیزدهم": 13,
+    "چهاردهم": 14,
+    "پانزدهم": 15,
+    "شانزدهم": 16,
+    "هفدهم": 17,
+    "هجدهم": 18,
+    "نوزدهم": 19,
+}
+_ORDINAL_TENS = {"بیست": 20, "سی": 30, "چهل": 40, "پنجاه": 50}
+_ORDINAL_TENS_ALONE = {"بیستم": 20, "سیام": 30, "چهلم": 40, "پنجاهم": 50}
+
+
+def _ordinal_table() -> dict[str, int]:
+    table = dict(_ORDINAL_UNITS)
+    table.update(_ORDINAL_TENS_ALONE)
+    for tens_word, tens in _ORDINAL_TENS.items():
+        for unit_word, unit in _ORDINAL_UNITS.items():
+            table.setdefault(f"{tens_word}و{unit_word}", tens + unit)
+    return table
+
+
+#: Every ordinal this module recognises, keyed by its *compacted* spelling -
+#: no spaces, no ZWNJ, no diacritics. A book prints ``بیست و یکم`` with spaces
+#: and a PDF text layer sometimes splits a word mid-way, so matching has to
+#: happen on the compacted form or it misses rows that a reader reads fine.
+ORDINALS: dict[str, int] = _ordinal_table()
+
+#: Longest first: ``بیستویکم`` must win over the ``یکم`` inside it.
+ORDINALS_BY_LENGTH = sorted(ORDINALS.items(), key=lambda kv: -len(kv[0]))
+
+
+def ordinal_to_int(text: str) -> int | None:
+    """Value of a Persian ordinal word, or ``None`` if it is not one.
+
+    Accepts the spellings a textbook actually prints - ``اوّل`` with a shadda,
+    ``بیست و یکم`` with spaces, ``سی‌ام`` with a ZWNJ - by comparing compacted
+    forms rather than the literal string.
+    """
+    return ORDINALS.get(compact(text))

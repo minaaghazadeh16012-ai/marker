@@ -22,12 +22,16 @@ from pydantic import BaseModel, Field
 from content_assistant.text.persian import normalize
 
 #: Bumped whenever a field is added, removed, or changes meaning. 1.0.0 held
-#: lessons, sections, concepts and objectives; 1.1.0 adds per-entity
-#: provenance, the review lifecycle, and the learning-experience layer. Every
-#: 1.1.0 addition is optional with a default, so a 1.0.0 artifact still loads -
-#: see :mod:`content_assistant.package.migrate`, which is the only place
-#: allowed to decide whether a stored version can be read.
-SCHEMA_VERSION = "1.1.0"
+#: lessons, sections, concepts and objectives; 1.1.0 added per-entity
+#: provenance, the review lifecycle, and the learning-experience layer; 1.2.0
+#: adds what an engine needs to *run* that layer - how an item is graded, which
+#: template draws it, where an activity sits in a sequence - and widens the
+#: response-form vocabulary to the forms a first-grade book actually asks for.
+#: Every addition since 1.0.0 is optional with a default, so an artifact
+#: written against any earlier minor still loads - see
+#: :mod:`content_assistant.package.migrate`, which is the only place allowed to
+#: decide whether a stored version can be read.
+SCHEMA_VERSION = "1.2.0"
 
 #: The public name for the same number. Consumers outside this package ask for
 #: "the content schema version"; there is exactly one, and this is it.

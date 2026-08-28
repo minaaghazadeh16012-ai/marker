@@ -22,6 +22,14 @@ from content_assistant.extraction.page_diagnostics import (
     intersection_area,
     single_char_span_ratio,
 )
+from content_assistant.extraction.contents import (
+    columns,
+    contents_rows,
+    join_row,
+    reconstruct_plain_toc,
+    split_trailing_page,
+    unit_marker,
+)
 from content_assistant.extraction.pipeline import build_page_map
 from content_assistant.extraction.recovery import (
     _greedy_assignment,
@@ -539,6 +547,238 @@ class DecorativeTocTests(unittest.TestCase):
             config=CONFIG,
         )
         self.assertFalse(diag.is_decorative)
+
+
+# ---------------------------------------------------------------------------
+# plain (typeset) contents page
+# ---------------------------------------------------------------------------
+
+
+class CompactAndOrdinalTests(unittest.TestCase):
+    def test_compact_strips_everything_a_reader_ignores(self):
+        self.assertEqual(persian.compact("اوّ ل"), "اول")
+        self.assertEqual(persian.compact("سی‌ام"), "سیام")
+        self.assertEqual(persian.compact("ــ قرآن"), "قرآن")
+        self.assertEqual(persian.compact("درس اوّل:"), "درساول")
+
+    def test_compact_keeps_digits_and_folds_them(self):
+        self.assertEqual(persian.compact("نگاره ی ۱"), "نگارهی1")
+
+    def test_ordinals_survive_the_spellings_a_book_prints(self):
+        self.assertEqual(persian.ordinal_to_int("اوّل"), 1)
+        self.assertEqual(persian.ordinal_to_int("بیست و یکم"), 21)
+        self.assertEqual(persian.ordinal_to_int("سی‌ام"), 30)
+        self.assertEqual(persian.ordinal_to_int("دوازدهم"), 12)
+
+    def test_a_word_that_is_not_an_ordinal_stays_none(self):
+        self.assertIsNone(persian.ordinal_to_int("درس"))
+        self.assertIsNone(persian.ordinal_to_int("قرآن"))
+
+
+class ContentsRowParsingTests(unittest.TestCase):
+    def test_page_number_is_taken_from_the_end_of_the_row(self):
+        self.assertEqual(
+            split_trailing_page("درس دوازدهم قـ ق ــ لـ ل 64"),
+            ("درس دوازدهم قـ ق ــ لـ ل", 64),
+        )
+
+    def test_an_index_before_the_page_stays_in_the_title(self):
+        # نگاره ی 1 is on page 2 - reading the two numbers the other way round
+        # would put every unit of the book on the wrong page.
+        self.assertEqual(split_trailing_page("نگاره ی 1 2"), ("نگاره ی 1", 2))
+
+    def test_a_row_without_a_trailing_number_has_no_page(self):
+        self.assertEqual(
+            split_trailing_page("درس بیست و یکم"), ("درس بیست و یکم", None)
+        )
+
+    def test_a_row_that_is_only_a_number_is_not_a_titled_row(self):
+        self.assertEqual(split_trailing_page("64"), ("64", None))
+
+
+class UnitMarkerTests(unittest.TestCase):
+    def test_word_then_ordinal(self):
+        self.assertEqual(unit_marker("درس دوازدهم قـ ق", CONFIG), ("درس", 12))
+
+    def test_word_then_numeral(self):
+        self.assertEqual(unit_marker("نگاره ی 1", CONFIG), ("نگارهی", 1))
+
+    def test_bare_leading_index(self):
+        self.assertEqual(
+            unit_marker("1ــ به خانه‌ی ما خوش‌آمدی", CONFIG), ("", 1)
+        )
+
+    def test_the_earliest_ordinal_wins_over_the_one_inside_it(self):
+        # یازدهم contains دهم; بیست و یکم contains یکم.
+        self.assertEqual(unit_marker("درس یازدهم فـ ف", CONFIG), ("درس", 11))
+        self.assertEqual(unit_marker("درس بیست و یکم", CONFIG), ("درس", 21))
+
+    def test_a_broken_spelling_still_matches(self):
+        self.assertEqual(unit_marker("درس اوّ ل: به نام خدا", CONFIG), ("درس", 1))
+
+    def test_a_sub_item_declares_no_unit(self):
+        self.assertIsNone(unit_marker("با هم بخوانیم )دریا(", CONFIG))
+        self.assertIsNone(unit_marker("ــ جدول الفبای فارسی", CONFIG))
+
+    def test_an_index_too_far_into_the_row_is_part_of_the_title(self):
+        self.assertIsNone(unit_marker("مهربان‌ترین معلم کلاس 2", CONFIG))
+
+
+class ContentsColumnTests(unittest.TestCase):
+    def _two_column_lines(self):
+        return [
+            line("فهرست", 52, 63, 505, 112),  # spans both columns
+            line("درس بیست و یکم", 52, 176, 280, 196),
+            line("درس آزاد محلّ زندگی من 103", 52, 200, 280, 220),
+            line("1ــ به خانه‌ی ما خوش‌آمدی 2", 300, 176, 521, 196),
+            line("درس اوّل آ ا ــ بـ ب 27", 300, 200, 521, 220),
+        ]
+
+    def test_two_columns_are_found(self):
+        self.assertEqual(len(columns(self._two_column_lines(), CONFIG)), 2)
+
+    def test_a_heading_spanning_the_page_does_not_weld_the_columns(self):
+        bands = columns(self._two_column_lines(), CONFIG)
+        self.assertLess(bands[0][1], bands[1][0])
+
+    def test_a_single_column_page_is_one_band(self):
+        lines = [
+            line("درس اوّل: به نام خدا 14", 136, 139, 487, 162),
+            line("درس دوم: نعمت‌های خدا 22", 139, 181, 487, 204),
+        ]
+        self.assertEqual(len(columns(lines, CONFIG)), 1)
+
+    def test_rows_in_different_columns_are_not_joined(self):
+        rows = contents_rows(self._two_column_lines(), CONFIG)
+        texts = [row.text for row in rows]
+        self.assertIn("درس بیست و یکم", texts)
+        self.assertIn("1ــ به خانه‌ی ما خوش‌آمدی 2", texts)
+
+
+class JoinRowTests(unittest.TestCase):
+    def test_fragments_are_read_right_to_left_not_top_down(self):
+        # The two halves of one printed row, the right-hand half sitting a
+        # hair higher. Ordering by height would put the page number first.
+        fragments = [
+            line("ّل آ ا ــ بـ ب 27", 298, 472, 487, 496),
+            line("درس او", 483, 472, 520, 493),
+        ]
+        self.assertEqual(join_row(fragments), "درس او ّل آ ا ــ بـ ب 27")
+
+
+class PlainTocTests(unittest.TestCase):
+    """Two columns, a sub-item that is not a lesson, a title that wrapped and
+    a lesson the book never numbered - the four shapes the real page has."""
+
+    def _toc_lines(self):
+        return [
+            line("فهرست", 52, 63, 505, 112),
+            # right column
+            line("1ــ به خانه‌ی ما خوش‌آمدی 2", 300, 176, 521, 196),
+            line("با هم بخوانیم )خدای مهربان( 4", 300, 200, 510, 220),
+            line("2ــ بچه‌ها، آماده! 5", 300, 224, 521, 244),
+            line("درس اوّل آ ا ــ بـ ب 27", 300, 248, 521, 268),
+            line("درس دوم اَ ــ د 30", 300, 272, 521, 292),
+            # left column
+            line("درس بیست و یکم", 52, 176, 280, 196),
+            line("ــ لاک‌پشت و مرغابی‌ها 100", 52, 200, 280, 220),
+            line("درس آزاد محلّ زندگی من 103", 52, 224, 280, 244),
+            line("درس بیست و دوم پیامبر مهربان 104", 52, 248, 280, 268),
+        ]
+
+    def _entries(self):
+        return reconstruct_plain_toc(
+            pdf_page=4,
+            raw_lines=self._toc_lines(),
+            page_count=120,
+            config=CONFIG,
+        )
+
+    def test_every_unit_row_becomes_an_entry(self):
+        self.assertEqual(len(self._entries()), 7)
+
+    def test_units_map_to_the_page_printed_beside_them(self):
+        pages = sorted(entry.printed_page for entry in self._entries())
+        self.assertEqual(pages, [2, 5, 27, 30, 100, 103, 104])
+
+    def test_a_sub_item_is_not_a_lesson(self):
+        titles = " | ".join(entry.title for entry in self._entries())
+        self.assertNotIn("با هم بخوانیم", titles)
+
+    def test_a_title_that_wrapped_takes_the_page_off_its_next_line(self):
+        wrapped = [e for e in self._entries() if "بیست و یکم" in e.title]
+        self.assertEqual(len(wrapped), 1)
+        self.assertEqual(wrapped[0].printed_page, 100)
+
+    def test_a_lesson_the_book_never_numbered_is_still_a_lesson(self):
+        free = [e for e in self._entries() if "آزاد" in e.title]
+        self.assertEqual(len(free), 1)
+        self.assertIsNone(free[0].lesson_number)
+
+    def test_the_index_kept_is_the_one_the_book_prints(self):
+        by_page = {e.printed_page: e.lesson_number for e in self._entries()}
+        self.assertEqual(by_page[2], 1)
+        self.assertEqual(by_page[27], 1)  # نگاره 1 and درس اول both print "1"
+        self.assertEqual(by_page[104], 22)
+
+    def test_the_source_page_is_recorded(self):
+        self.assertTrue(all(e.source_pdf_page == 4 for e in self._entries()))
+
+
+class PlainTocRejectionTests(unittest.TestCase):
+    def test_an_ordinary_body_page_is_not_a_contents_page(self):
+        lines = [
+            line("درس دوم", 52, 60, 200, 80),
+            line("شکل‌های زیر را بشمار و بگو 3", 52, 100, 400, 120),
+            line("هر دانش‌آموز باید بتواند بشمارد", 52, 130, 400, 150),
+        ]
+        self.assertEqual(
+            reconstruct_plain_toc(
+                pdf_page=9, raw_lines=lines, page_count=120, config=CONFIG
+            ),
+            [],
+        )
+
+    def test_rows_pointing_at_one_page_over_and_over_are_not_a_contents_list(self):
+        words = ["اول", "دوم", "سوم", "چهارم", "پنجم", "ششم"]
+        lines = [
+            line("درس " + word + " 7", 52, 60 + 24 * i, 280, 80 + 24 * i)
+            for i, word in enumerate(words)
+        ]
+        self.assertEqual(
+            reconstruct_plain_toc(
+                pdf_page=4, raw_lines=lines, page_count=120, config=CONFIG
+            ),
+            [],
+        )
+
+    def test_a_list_that_never_reaches_into_the_book_is_not_a_contents_list(self):
+        words = ["اول", "دوم", "سوم", "چهارم", "پنجم", "ششم"]
+        lines = [
+            line("درس " + word + " " + str(i + 2), 52, 60 + 24 * i, 280, 80 + 24 * i)
+            for i, word in enumerate(words)
+        ]
+        self.assertEqual(
+            reconstruct_plain_toc(
+                pdf_page=4, raw_lines=lines, page_count=400, config=CONFIG
+            ),
+            [],
+        )
+
+    def test_a_decorative_page_yields_nothing_here(self):
+        # Glyph-scattered fragments, no row ending in a page number: this page
+        # belongs to the decorative reader, and this one declines it.
+        lines = [
+            line("10", 405, 73, 462, 175),
+            line("زنگ", 394, 42, 428, 61),
+            line("علوم", 364, 57, 393, 86),
+        ]
+        self.assertEqual(
+            reconstruct_plain_toc(
+                pdf_page=3, raw_lines=lines, page_count=104, config=CONFIG
+            ),
+            [],
+        )
 
 
 # ---------------------------------------------------------------------------

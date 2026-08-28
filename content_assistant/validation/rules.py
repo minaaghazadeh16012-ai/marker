@@ -31,6 +31,7 @@ from content_assistant.models.content import (
     Lesson,
     Section,
 )
+from content_assistant.models.learning import ACTIVITY_TYPES, QUESTION_TYPES
 from content_assistant.models.extraction import ExtractionResult
 
 Severity = str  # "error" | "warning" | "review"
@@ -144,6 +145,8 @@ class UniqueIds(Rule):
                 ("skill", ctx.schema_doc.skills),
                 ("misconception", ctx.schema_doc.misconceptions),
                 ("relation", ctx.schema_doc.relations),
+                ("activity", ctx.schema_doc.activities),
+                ("question", ctx.schema_doc.questions),
                 ("evidence", ctx.schema_doc.evidence),
             ]
         for kind, items in groups:
@@ -334,6 +337,39 @@ class PagesCovered(Rule):
                 "is expected here)",
                 details={"pages": missing},
             )
+
+
+class BookYieldedLessons(Rule):
+    code = "STRUCT011"
+    severity = "warning"
+    description = "A book with pages but no lessons produced nothing."
+
+    def check(self, ctx):
+        """The empty result that looks exactly like a successful one.
+
+        A package with no lessons is valid - every other rule has nothing to
+        object to, because there is nothing there. That is precisely the
+        problem: a book whose contents page was never found and a book that was
+        never run produce identical, clean, empty packages.
+
+        Reported rather than refused, because empty can be the true answer. A
+        grade-1 riazi book prints no contents list at all - no decorative
+        spread, no typeset table, nothing that names a unit and a page - so no
+        lesson boundary exists to be found, and inventing one would be worse
+        than yielding none. What this rule guarantees is that the outcome is
+        *stated* rather than inferred from a silence.
+        """
+        if not ctx.extraction or ctx.lessons:
+            return
+        pages = len(ctx.extraction.pages)
+        if not pages:
+            return
+        yield self.finding(
+            f"the book has {pages} pages but no lessons; nothing named a unit "
+            "and a page, so no boundary could be read. An empty package here "
+            "is the honest answer, not a processed one",
+            details={"pages": pages, "toc_entries": len(ctx.extraction.toc)},
+        )
 
 
 # ---------------------------------------------------------------------------
@@ -1229,6 +1265,284 @@ class SkillIsMoreThanOneObjective(Rule):
                 )
 
 
+class SkillLinkIsMutual(Rule):
+    code = "LINK005"
+    stage = "final"
+    description = "An objective's skill must be one that claims the objective."
+
+    def check(self, ctx):
+        """The one place two fields hold the same fact, kept in step.
+
+        A skill is *defined* by the objectives it generalises, so
+        ``Skill.objective_ids`` is the owning side and
+        ``LearningObjective.skill_id`` is a pointer back for a consumer holding
+        an objective. Two fields for one fact is a compromise the schema
+        already made; what it cannot also afford is the two disagreeing, which
+        would make ``skills_for_objective`` and a dashboard reading
+        ``skill_id`` show different answers for the same objective.
+        """
+        if not ctx.schema_doc:
+            return
+        skills = {skill.id: skill for skill in ctx.schema_doc.skills}
+        for objective in ctx.schema_doc.objectives:
+            if not objective.skill_id:
+                continue
+            skill = skills.get(objective.skill_id)
+            if skill is None:
+                # LINK001 already reports an id that resolves to nothing.
+                continue
+            if objective.id not in skill.objective_ids:
+                yield self.finding(
+                    f"objective {objective.id} names skill {skill.id}, but "
+                    "that skill does not list it among the objectives it "
+                    "generalises",
+                    entity_id=objective.id,
+                    entity_kind="objective",
+                )
+
+
+class ActivityQuestionsServeIt(Rule):
+    code = "LINK006"
+    stage = "final"
+    severity = "warning"
+    description = "A question inside an activity should measure what it is for."
+
+    def check(self, ctx):
+        """An activity that practises one thing and tests another.
+
+        Both halves are individually valid - the activity serves an objective,
+        the question measures one - which is exactly why this needs its own
+        check: nothing else in the schema compares them. A child who works
+        through the activity and then fails its questions has been assessed on
+        something the activity never taught, and the failure is recorded
+        against the wrong objective.
+
+        Reported rather than refused, because a deliberate mixed review is a
+        real thing; it should just be visible.
+        """
+        if not ctx.schema_doc:
+            return
+        questions = {q.id: q for q in ctx.schema_doc.questions}
+        for activity in ctx.schema_doc.activities:
+            if not activity.objective_ids:
+                continue  # LINK002 owns that failure
+            served = set(activity.objective_ids)
+            for question_id in activity.question_ids:
+                question = questions.get(question_id)
+                if question is None:
+                    continue  # LINK001 owns that failure
+                if not served.intersection(question.objective_ids):
+                    yield self.finding(
+                        f"activity {activity.id} asks question {question_id}, "
+                        "which measures none of the objectives the activity "
+                        "serves",
+                        entity_id=activity.id,
+                        entity_kind="activity",
+                    )
+
+
+class NoDuplicateSkills(Rule):
+    code = "LINK007"
+    stage = "final"
+    severity = "warning"
+    description = "Two skills naming the same ability are one skill twice."
+
+    def check(self, ctx):
+        """Two ways the same ability gets entered twice.
+
+        Under one name, by two people - the labels match. Or under two names
+        that turn out to group exactly the same objectives, which is the same
+        duplicate wearing a disguise and the one a label check misses. Either
+        way a dashboard shows a child two mastery bars for one ability, and
+        neither of them is complete.
+        """
+        if not ctx.schema_doc:
+            return
+        from content_assistant.models.content import id_slug
+
+        by_label: Dict[str, str] = {}
+        by_group: Dict[tuple, str] = {}
+        for skill in ctx.schema_doc.skills:
+            label = id_slug(skill.label)
+            if label and label in by_label:
+                yield self.finding(
+                    f"skill {skill.id} has the same label as "
+                    f"{by_label[label]}; one ability is being tracked twice",
+                    entity_id=skill.id,
+                    entity_kind="skill",
+                )
+            elif label:
+                by_label[label] = skill.id
+            group = tuple(sorted(skill.objective_ids))
+            if not group:
+                continue  # LINK004 owns the empty case
+            if group in by_group:
+                yield self.finding(
+                    f"skill {skill.id} groups exactly the same objectives as "
+                    f"{by_group[group]}; they are the same ability under two "
+                    "names",
+                    entity_id=skill.id,
+                    entity_kind="skill",
+                )
+            else:
+                by_group[group] = skill.id
+
+
+class NoDuplicateRelations(Rule):
+    code = "FINAL004"
+    stage = "final"
+    severity = "warning"
+    description = "One edge stated twice is one edge, counted twice."
+
+    def check(self, ctx):
+        """The same edge entered twice, under two ids.
+
+        :meth:`Relation.build_id` derives an id from the triple, so two records
+        of the same edge normally collide and ``STRUCT002`` reports them. What
+        gets past that is an edge whose id was written by hand or carried over
+        from an earlier scheme - and then a traversal returns the same
+        prerequisite twice and anything weighting edges counts it double.
+        """
+        if not ctx.schema_doc:
+            return
+        seen: Dict[tuple, str] = {}
+        for relation in ctx.schema_doc.relations:
+            key = (
+                relation.source_id,
+                relation.relation_type,
+                relation.target_id,
+            )
+            if key in seen:
+                yield self.finding(
+                    f"relation {relation.id} restates "
+                    f"{relation.source_id} -{relation.relation_type}-> "
+                    f"{relation.target_id}, already stated by {seen[key]}",
+                    entity_id=relation.id,
+                    entity_kind="relation",
+                    details={"duplicate_of": seen[key]},
+                )
+            else:
+                seen[key] = relation.id
+
+
+# ---------------------------------------------------------------------------
+# question and activity integrity
+#
+# Linkage says an item serves something real. These say the item itself would
+# work when a child reaches it - which is a different question, and the one
+# whose failures surface at runtime in front of a six-year-old rather than in a
+# report.
+# ---------------------------------------------------------------------------
+
+
+class ExperienceTypeIsInVocabulary(Rule):
+    code = "QUEST001"
+    stage = "final"
+    description = "Activity and question types come from the closed lists."
+
+    def check(self, ctx):
+        """A backstop, and deliberately one.
+
+        Pydantic refuses an unknown value on the way in, so this can only fire
+        on a package assembled by code that widened the vocabulary without
+        widening what consumes it - which is exactly when a silent extra value
+        would reach a renderer that has no template for it.
+        """
+        if not ctx.schema_doc:
+            return
+        for activity in ctx.schema_doc.activities:
+            if activity.activity_type not in ACTIVITY_TYPES:
+                yield self.finding(
+                    f"activity {activity.id} has type "
+                    f"{activity.activity_type!r}, which is outside the closed "
+                    "vocabulary",
+                    entity_id=activity.id,
+                    entity_kind="activity",
+                )
+        for question in ctx.schema_doc.questions:
+            if question.question_type not in QUESTION_TYPES:
+                yield self.finding(
+                    f"question {question.id} has type "
+                    f"{question.question_type!r}, which is outside the closed "
+                    "vocabulary",
+                    entity_id=question.id,
+                    entity_kind="question",
+                )
+
+
+class AutoMarkedQuestionCanBeMarked(Rule):
+    code = "QUEST002"
+    stage = "final"
+    description = "An item promising instant marking must have an answer key."
+
+    def check(self, ctx):
+        """The promise an engine makes before it has looked at the item.
+
+        ``auto_gradable`` is what an engine reads to decide whether to show a
+        child a mark immediately. An item that answers yes and then carries no
+        correct option and no answer key cannot be marked at all, so the
+        failure lands at the moment a child says they are done - the worst
+        possible place for it. ``hybrid`` and ``manual`` items are exempt: they
+        never made the promise.
+        """
+        if not ctx.schema_doc:
+            return
+        for question in ctx.schema_doc.questions:
+            if not question.auto_gradable:
+                continue
+            if question.correct_options() or question.answer_key():
+                continue
+            yield self.finding(
+                f"question {question.id} is marked automatically but carries "
+                "neither a correct option nor an answer key; there is nothing "
+                "to mark against",
+                entity_id=question.id,
+                entity_kind="question",
+            )
+
+
+class ChoiceQuestionOffersAChoice(Rule):
+    code = "QUEST003"
+    stage = "final"
+    description = "A choice among fewer than two things is not a choice."
+
+    def check(self, ctx):
+        """Three ways a set of options fails to be one.
+
+        Fewer than two of them; two options that are the same option under one
+        id, so a stored attempt cannot say which was chosen; or every option
+        marked correct, which is a question that cannot be got wrong and
+        therefore measures nothing. The last is not caught by ``LINK002``,
+        which only asks whether an objective is named.
+        """
+        if not ctx.schema_doc:
+            return
+        for question in ctx.schema_doc.questions:
+            options = question.options
+            if question.question_type == "multiple_choice" and len(options) < 2:
+                yield self.finding(
+                    f"question {question.id} is multiple-choice with "
+                    f"{len(options)} option(s)",
+                    entity_id=question.id,
+                    entity_kind="question",
+                )
+            ids = [option.option_id for option in options]
+            if len(ids) != len(set(ids)):
+                yield self.finding(
+                    f"question {question.id} has two options sharing an id; an "
+                    "attempt on it could not say which was chosen",
+                    entity_id=question.id,
+                    entity_kind="question",
+                )
+            if options and all(option.is_correct for option in options):
+                yield self.finding(
+                    f"question {question.id} marks every option correct; it "
+                    "cannot be got wrong and so measures nothing",
+                    entity_id=question.id,
+                    entity_kind="question",
+                )
+
+
 #: Order matters only for readability of the report.
 ALL_RULES: Sequence[Rule] = (
     BookIdentityDeclared(),
@@ -1241,6 +1555,7 @@ ALL_RULES: Sequence[Rule] = (
     ReferencedAssetsExist(),
     LessonHasContent(),
     PagesCovered(),
+    BookYieldedLessons(),
     EntityHasEvidence(),
     EvidenceReferencesRealBlock(),
     EvidenceIdsResolve(),
@@ -1268,4 +1583,11 @@ ALL_RULES: Sequence[Rule] = (
     ExperienceServesSomething(),
     PrerequisiteIsAccountable(),
     SkillIsMoreThanOneObjective(),
+    SkillLinkIsMutual(),
+    ActivityQuestionsServeIt(),
+    NoDuplicateSkills(),
+    NoDuplicateRelations(),
+    ExperienceTypeIsInVocabulary(),
+    AutoMarkedQuestionCanBeMarked(),
+    ChoiceQuestionOffersAChoice(),
 )
