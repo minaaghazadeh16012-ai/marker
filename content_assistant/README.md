@@ -281,7 +281,7 @@ Standard-library `unittest` — no pytest, no network, no PDF, no Marker run:
 python -m unittest discover -s content_assistant/tests -t .
 ```
 
-540 tests, all deterministic: no model, no network, no PDF, no Marker process.
+548 tests, all deterministic: no model, no network, no PDF, no Marker process.
 
 ## L1 — deterministic structuring
 
@@ -465,7 +465,7 @@ drop fields from.
 
 [CONTENT_SCHEMA.md](CONTENT_SCHEMA.md) is the reference: the three layers and
 what binds each, the entity map, identity, provenance, the review lifecycle,
-all 46 validation rules, versioning, and what an adaptive engine may and may
+all 47 validation rules, versioning, and what an adaptive engine may and may
 not ask of the content layer.
 
 ## Human authoring

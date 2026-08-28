@@ -213,7 +213,7 @@ spelled twice, and `LINK004` says so.
 ## Validation
 
 Independent of every generator, and grouped by the stage at which each check
-becomes possible. **46 rules.**
+becomes possible. **47 rules.**
 
 > A rule proved only by the code that implements it is not proved.
 
@@ -235,6 +235,7 @@ property from the assembled document by an unrelated route.
 | `STRUCT010` | structure | warning | Report pages that belong to no lesson. |
 | `STRUCT011` | structure | warning | A book with pages but no lessons produced nothing. |
 | `STRUCT012` | structure | error | A block in a lesson but in no section is invisible, not mislabelled. |
+| `STRUCT013` | semantic | warning | A lesson with real text but no concept may be the model's silence. |
 | `EVID001` | semantic | error | Nothing enters the schema without evidence, or a person. |
 | `EVID002` | semantic | error | Evidence must point at a block that exists. |
 | `EVID003` | semantic | error | An entity's evidence ids must exist in the evidence table. |
@@ -289,6 +290,20 @@ includes it. Measured on four grade-1 books before the leading `page_fallback`
 section existed, that was between 6% and 30% of a book's lesson text, and
 nothing reported it. An error, not a warning: the run that follows is not
 slightly worse, it is answering a different question from the one it appears to.
+
+`STRUCT013` — a model that answers "this lesson teaches nothing" returns the
+same empty list as a model that has given up, and both validate. The stages
+already refuse to record a *failed* call as an empty answer (`ModelCallFailed`);
+this covers the call that succeeds and says nothing. It is not hypothetical: on
+the grade-1 farsi book one weaker model returned an empty list for 12 of the 23
+lessons it was given — none rejected for want of grounding — while the stronger
+models returned empty for none of the 10 they were given. Those 12 entered a
+clean package as lessons that teach nothing.
+
+A warning, never an error, and only above `min_chars_for_expected_concept`: a
+short lesson may truly hold no claim, and the rule must not push anyone toward
+inventing one. It reports the shape — a lesson whose text the model was shown,
+with nothing to show for it — and leaves the judgement to a person.
 
 `LINK006` — an activity serves an objective and its question measures one, so
 both halves pass every linkage check. Nothing else compares the two, and a
@@ -536,7 +551,7 @@ document:
 | `models/learning.py` | `LearningActivity`, `Question`, `QuestionOption`, `GradingSpec` |
 | `models/objective.py` | the closed performance-verb lexicon, versioned apart |
 | `models/extraction.py` | the L0 artifact, and every extraction threshold |
-| `validation/rules.py` | all 46 rules |
+| `validation/rules.py` | all 47 rules |
 | `validation/engine.py` | runs them; owns no checks of its own |
 | `package/schema.py` | `ContentPackage`, `load_content`, `save_content` |
 | `package/build.py` | assembles a package from run artifacts |

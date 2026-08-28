@@ -819,6 +819,65 @@ class EmptyBookTests(unittest.TestCase):
         self.assertNotIn("STRUCT011", run_validation(ctx, stages=["structure"]).by_code())
 
 
+class EmptyLessonTests(unittest.TestCase):
+    """A model's silence is not a finding about the book.
+
+    A call that succeeds and returns nothing is indistinguishable, in the
+    artifact, from a lesson that genuinely states no teachable claim. The
+    stages already refuse to record a *failed* call as an empty answer;
+    STRUCT013 covers the successful one.
+    """
+
+    def _ctx(self, **kwargs):
+        ctx = base_context()
+        # A concept for lesson 1 only; lesson 2 is the one that came back empty.
+        ctx.schema_doc = schema_with(concepts=[concept()], evidence=[evidence()])
+        for key, value in kwargs.items():
+            setattr(ctx, key, value)
+        return ctx
+
+    def test_a_lesson_that_produced_nothing_is_reported(self):
+        ctx = self._ctx(min_chars_for_expected_concept=10)
+        report = run_validation(ctx, stages=["semantic"])
+        self.assertIn("STRUCT013", report.by_code())
+
+    def test_it_is_a_warning_not_an_error(self):
+        """It must never push anyone toward inventing a concept."""
+        ctx = self._ctx(min_chars_for_expected_concept=10)
+        report = run_validation(ctx, stages=["semantic"])
+        codes = [f.code for f in report.findings if f.severity == "error"]
+        self.assertNotIn("STRUCT013", codes)
+        self.assertTrue(report.ok)
+
+    def test_a_short_lesson_may_truly_hold_no_claim(self):
+        ctx = self._ctx(min_chars_for_expected_concept=200)
+        self.assertNotIn(
+            "STRUCT013", run_validation(ctx, stages=["semantic"]).by_code()
+        )
+
+    def test_a_book_with_no_concepts_at_all_is_a_stage_never_run(self):
+        ctx = base_context()
+        ctx.min_chars_for_expected_concept = 10
+        ctx.schema_doc = schema_with()
+        self.assertNotIn(
+            "STRUCT013", run_validation(ctx, stages=["semantic"]).by_code()
+        )
+
+    def test_a_lesson_that_produced_a_concept_is_not_reported(self):
+        ctx = base_context()
+        ctx.min_chars_for_expected_concept = 10
+        ctx.schema_doc = schema_with(
+            concepts=[
+                concept(cid="c1", lesson=f"{BOOK}:lesson:01"),
+                concept(cid="c2", lesson=f"{BOOK}:lesson:02"),
+            ],
+            evidence=[evidence()],
+        )
+        self.assertNotIn(
+            "STRUCT013", run_validation(ctx, stages=["semantic"]).by_code()
+        )
+
+
 
 class EvidenceValidationTests(unittest.TestCase):
     def test_an_entity_without_evidence_is_rejected(self):

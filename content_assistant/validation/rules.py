@@ -60,6 +60,11 @@ class ValidationContext(BaseModel):
     schema_doc: Optional[ContentSchema] = None
     #: Ratio of inferred to explicit entities above which a run is suspect.
     max_inferred_ratio: float = 0.85
+    #: Lesson text, in characters, above which yielding no concept at all is
+    #: worth reporting. Roughly a paragraph: below it a lesson may genuinely
+    #: state nothing teachable (a one-page free-choice lesson, a divider),
+    #: while above it silence is more likely the model's than the book's.
+    min_chars_for_expected_concept: int = 200
 
     def block_ids(self) -> Set[str]:
         if not self.extraction:
@@ -406,6 +411,58 @@ class BookYieldedLessons(Rule):
             details={"pages": pages, "toc_entries": len(ctx.extraction.toc)},
         )
 
+
+
+class LessonYieldedConcepts(Rule):
+    code = "STRUCT013"
+    stage = "semantic"
+    severity = "warning"
+    description = "A lesson with real text but no concept may be the model's silence."
+
+    def check(self, ctx):
+        """The silence that reads exactly like a finding about the book.
+
+        A model that answers "this lesson teaches nothing" returns the same
+        empty list as a model that has simply given up, and both validate. The
+        stages already refuse to record a *failed* call as an empty answer -
+        ``ModelCallFailed`` exists for that - but a call that succeeds and
+        returns nothing is indistinguishable from a lesson that genuinely
+        states no teachable claim, and nothing anywhere reported it.
+
+        It is real: on the grade-1 farsi book, one weaker model returned an
+        empty list for 12 of the 23 lessons it was given, none of them rejected
+        for want of grounding, while the stronger models returned empty for
+        none of the 10 they were given. Those 12 lessons entered a clean
+        package as lessons that teach nothing.
+
+        A warning, not an error, and only above ``min_chars_for_expected_concept``:
+        a short lesson may truly hold no claim, and this rule must not push
+        anyone toward inventing one. It reports the shape - a lesson with text
+        the model was shown and nothing to show for it - and leaves the
+        judgement to a person. Silent when the book has no concepts at all,
+        because that is a semantic stage that was never run, not a lesson that
+        came back empty.
+        """
+        if not ctx.schema_doc or not ctx.lessons:
+            return
+        if not ctx.schema_doc.concepts:
+            return
+        answered = {concept.lesson_id for concept in ctx.schema_doc.concepts}
+        for lesson in ctx.lessons:
+            if lesson.id in answered:
+                continue
+            chars = lesson.material_profile.text_chars
+            if chars < ctx.min_chars_for_expected_concept:
+                continue
+            yield self.finding(
+                f"lesson {lesson.lesson_number} was shown {chars} characters "
+                "and produced no concept, while other lessons of this book "
+                "produced some; an empty answer is not the same as a lesson "
+                "that teaches nothing",
+                entity_id=lesson.id,
+                entity_kind="lesson",
+                details={"text_chars": chars},
+            )
 
 # ---------------------------------------------------------------------------
 # evidence rules
@@ -1592,6 +1649,7 @@ ALL_RULES: Sequence[Rule] = (
     PagesCovered(),
     BookYieldedLessons(),
     LessonTextLandsInASection(),
+    LessonYieldedConcepts(),
     EntityHasEvidence(),
     EvidenceReferencesRealBlock(),
     EvidenceIdsResolve(),

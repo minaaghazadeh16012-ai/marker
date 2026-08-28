@@ -530,14 +530,73 @@ class ArtifactLoadingTests(unittest.TestCase):
             objectives, _ = load_objective_artifacts(root / "l2")
         self.assertEqual([o.id for o in objectives], ["o1"])
 
-    def test_a_missing_stage_directory_yields_nothing_rather_than_failing(self):
+    def test_a_missing_stage_directory_is_refused(self):
+        """Naming a directory is a claim that the stage ran there.
+
+        This used to yield an empty list, on the reasoning that an absent
+        stage is not an error. The cost showed up in practice: pointed at a
+        path that did not exist, the builder loaded nothing, assembled a
+        valid, clean, *empty* package and wrote it over a complete one. The
+        emptiness was indistinguishable from a book that genuinely holds
+        nothing, so nothing anywhere objected.
+
+        A book whose semantic stage really was never run passes no directory
+        at all - that stays legal, and is the honest way to say it.
+        """
         with tempfile.TemporaryDirectory() as tmp:
-            concepts, found = load_concept_artifacts(Path(tmp) / "absent")
-        self.assertEqual(concepts, [])
-        self.assertEqual(found, [])
+            with self.assertRaises(BuildError) as caught:
+                load_concept_artifacts(Path(tmp) / "absent")
+        self.assertIn("empty", str(caught.exception))
+
+    def test_a_directory_holding_no_artifact_is_refused(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            empty = Path(tmp) / "l1"
+            empty.mkdir()
+            with self.assertRaises(BuildError):
+                load_concept_artifacts(empty)
+
+    def test_the_objective_loader_refuses_the_same_way(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            with self.assertRaises(BuildError):
+                load_objective_artifacts(Path(tmp) / "absent")
 
 
 class BuilderCommandTests(unittest.TestCase):
+    def test_a_wrong_stage_path_is_refused_without_touching_the_package(self):
+        """The failure that overwrote a finished book with an empty one.
+
+        Pointed at a path that does not exist, the builder used to load
+        nothing and write a clean empty package over a complete one. It now
+        refuses, reports why, exits non-zero, and - the part that matters -
+        leaves the package already on disk exactly as it was.
+        """
+        with tempfile.TemporaryDirectory() as tmp:
+            root = Path(tmp)
+            write_stage_artifacts(root)
+            code, _ = run_builder(
+                [
+                    "--l0", str(root / "l0_extraction.json"),
+                    "--concepts", str(root / "l1"),
+                    "--objectives", str(root / "l2"),
+                    "--out", str(root / "content"),
+                ]
+            )
+            self.assertEqual(code, 0)
+            package_path = next((root / "content").rglob("content-package.json"))
+            before = package_path.read_text(encoding="utf-8")
+
+            code, summary = run_builder(
+                [
+                    "--l0", str(root / "l0_extraction.json"),
+                    "--concepts", str(root / "nowhere"),
+                    "--out", str(root / "content"),
+                ]
+            )
+            self.assertEqual(code, 2)
+            self.assertFalse(summary["written"])
+            self.assertIn("empty", summary["error"])
+            self.assertEqual(package_path.read_text(encoding="utf-8"), before)
+
     def test_the_builder_writes_a_package_a_registry_can_load(self):
         with tempfile.TemporaryDirectory() as tmp:
             root = Path(tmp)

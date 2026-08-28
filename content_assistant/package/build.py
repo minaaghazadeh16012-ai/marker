@@ -98,13 +98,42 @@ def _stage_provenance(payload: Dict, stage: str) -> Provenance:
     )
 
 
+def _artifact_paths(directory: Path, artifact: str, stage: str) -> List[Path]:
+    """The stage's per-lesson files, or a refusal to treat none as none.
+
+    A directory that holds no artifact is indistinguishable, downstream, from
+    a stage that genuinely produced nothing: both load as an empty list and
+    both assemble into a valid, clean, empty package - which is then written
+    over whatever was there before. A mistyped path is the common way in.
+
+    So naming a directory is a claim that the stage ran there, and this refuses
+    the claim when nothing backs it. A book whose semantic stage really was
+    never run passes no directory at all, which stays legal.
+    """
+    root = Path(directory)
+    if not root.is_dir():
+        raise BuildError(
+            f"no {stage} directory at {root}; nothing would be loaded and the "
+            "package would be written empty over whatever it replaces. Check "
+            "the path, or omit it if that stage was never run."
+        )
+    paths = sorted(root.glob(f"lesson-*/{artifact}"))
+    if not paths:
+        raise BuildError(
+            f"{root} holds no lesson-NN/{artifact}; the {stage} stage left "
+            "nothing there. Refusing to write an empty package: run the stage, "
+            "or omit the directory if it was never run."
+        )
+    return paths
+
+
 def load_concept_artifacts(
     directory: Path,
 ) -> Tuple[List[Concept], List[Evidence]]:
     """Every lesson's concepts, in lesson order."""
     concepts: List[Concept] = []
     evidence: Dict[str, Evidence] = {}
-    for path in sorted(Path(directory).glob(f"lesson-*/{CONCEPT_ARTIFACT}")):
+    for path in _artifact_paths(Path(directory), CONCEPT_ARTIFACT, "concept"):
         payload = _read_json(path)
         provenance = _stage_provenance(payload, "concepts")
         for raw in payload.get("concepts", []):
@@ -123,7 +152,9 @@ def load_objective_artifacts(
 ) -> Tuple[List[LearningObjective], List[Evidence]]:
     objectives: List[LearningObjective] = []
     evidence: Dict[str, Evidence] = {}
-    for path in sorted(Path(directory).glob(f"lesson-*/{OBJECTIVE_ARTIFACT}")):
+    for path in _artifact_paths(
+        Path(directory), OBJECTIVE_ARTIFACT, "objective"
+    ):
         payload = _read_json(path)
         provenance = _stage_provenance(payload, "objectives")
         for raw in payload.get("objectives", []):
@@ -322,28 +353,42 @@ def main(argv: Optional[Sequence[str]] = None) -> int:
     objectives: List[LearningObjective] = []
     concept_evidence: List[Evidence] = []
     objective_evidence: List[Evidence] = []
-    if args.concepts:
-        concepts, concept_evidence = load_concept_artifacts(Path(args.concepts))
-    if args.objectives:
-        objectives, objective_evidence = load_objective_artifacts(
-            Path(args.objectives)
+    try:
+        if args.concepts:
+            concepts, concept_evidence = load_concept_artifacts(
+                Path(args.concepts)
+            )
+        if args.objectives:
+            objectives, objective_evidence = load_objective_artifacts(
+                Path(args.objectives)
+            )
+
+        book_id = extraction.document.book.book_id or ""
+        authored = (
+            load_authored(Path(args.authored), book_id)
+            if args.authored
+            else AuthoredContent(book_id=book_id)
         )
 
-    book_id = extraction.document.book.book_id or ""
-    authored = (
-        load_authored(Path(args.authored), book_id)
-        if args.authored
-        else AuthoredContent(book_id=book_id)
-    )
-
-    package = build_package(
-        extraction=extraction,
-        concepts=concepts,
-        objectives=objectives,
-        evidence=merge_evidence(concept_evidence, objective_evidence),
-        authored=authored,
-        built_at=datetime.now(timezone.utc).isoformat(timespec="seconds"),
-    )
+        package = build_package(
+            extraction=extraction,
+            concepts=concepts,
+            objectives=objectives,
+            evidence=merge_evidence(concept_evidence, objective_evidence),
+            authored=authored,
+            built_at=datetime.now(timezone.utc).isoformat(timespec="seconds"),
+        )
+    except BuildError as exc:
+        # Nothing has been written at this point, and nothing will be: the
+        # existing package on disk is left exactly as it was.
+        print(
+            json.dumps(
+                {"written": False, "error": str(exc)},
+                ensure_ascii=False,
+                indent=1,
+            )
+        )
+        return 2
     report = validate_package(package, extraction)
 
     root = Path(args.out)

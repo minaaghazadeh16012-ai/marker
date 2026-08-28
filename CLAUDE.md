@@ -79,7 +79,7 @@ python -m content_assistant.structuring.semantic.run_book --l0 work-dir/l0_extra
 # assemble the per-lesson stage artifacts into one validated package
 python -m content_assistant.package.build --l0 work-dir/l0_extraction.json --concepts l1-dir --objectives l2-dir --authored content/grade-1/science --out content/
 
-python -m unittest discover -s content_assistant/tests -t .   # 540 tests, no deps
+python -m unittest discover -s content_assistant/tests -t .   # 548 tests, no deps
 ```
 
 Omitting `--llm` puts any runner in dry-run: it builds and writes the exact
@@ -201,7 +201,11 @@ Key facts when working on it:
 - **An empty result must say so.** `STRUCT011` reports a book with pages but no
   lessons, because every other rule is silent on an empty package - a book
   whose contents page was never found and a book that was never run otherwise
-  produce identical clean reports.
+  produce identical clean reports. The same silence exists one level down:
+  a model that succeeds and returns nothing produces the same artifact as a
+  lesson that genuinely teaches nothing, so `STRUCT013` reports a lesson with
+  real text and no concept. Both are warnings - an empty answer can be the
+  true one, and neither rule may push anyone toward inventing content.
 - **An artifact must name the model, not the adapter.** `MarkerServiceClient`
   records `<import path>@<concrete model>`; a service class is stable while the
   model behind it is not. Semantic calls also override Marker's 30-second
